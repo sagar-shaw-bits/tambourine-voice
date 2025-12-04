@@ -4,6 +4,7 @@ Buffers transcription text until the user explicitly stops recording,
 then emits a single consolidated transcription for LLM cleanup.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,11 +13,18 @@ from pipecat.frames.frames import (
     InputTransportMessageFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 
 from utils.logger import logger
+
+# Maximum time to wait for pending transcription when stop-recording is received
+# and speech was detected but buffer is empty (STT still processing)
+TRANSCRIPTION_WAIT_TIMEOUT_SECONDS = 0.8
+# Interval to poll for transcription arrival
+TRANSCRIPTION_POLL_INTERVAL_SECONDS = 0.05
 
 
 class TranscriptionBufferProcessor(FrameProcessor):
@@ -34,6 +42,10 @@ class TranscriptionBufferProcessor(FrameProcessor):
         self._buffer: str = ""
         self._last_user_id: str = "user"
         self._last_language: Language | None = None
+        # Track whether VAD detected speech since start-recording
+        self._speech_detected: bool = False
+        # Event to signal transcription has arrived (for waiting on slow STT)
+        self._transcription_arrived: asyncio.Event = asyncio.Event()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Process frames, buffering transcriptions until stop-recording message.
@@ -44,6 +56,12 @@ class TranscriptionBufferProcessor(FrameProcessor):
         """
         await super().process_frame(frame, direction)
 
+        # Track speech activity from VAD
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._speech_detected = True
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, TranscriptionFrame):
             # Accumulate transcription text and save metadata
             text = frame.text
@@ -51,6 +69,8 @@ class TranscriptionBufferProcessor(FrameProcessor):
                 self._buffer += text
                 self._last_user_id = frame.user_id
                 self._last_language = frame.language
+                # Signal that transcription has arrived (for waiting stop-recording)
+                self._transcription_arrived.set()
                 logger.debug(f"Buffered transcription: '{text}' (total: '{self._buffer}')")
             # Don't push TranscriptionFrame - we'll emit consolidated version later
             return
@@ -72,11 +92,13 @@ class TranscriptionBufferProcessor(FrameProcessor):
             logger.info(f"Received client message: type={message_type}")
 
             if message_type == "start-recording":
-                # New recording session - reset buffer
-                logger.info("Start-recording received, resetting buffer")
+                # New recording session - reset all state
+                logger.info("Start-recording received, resetting state")
                 self._buffer = ""
                 self._last_user_id = "user"
                 self._last_language = None
+                self._speech_detected = False
+                self._transcription_arrived.clear()
                 return
 
             if message_type == "stop-recording":
@@ -85,31 +107,79 @@ class TranscriptionBufferProcessor(FrameProcessor):
                     logger.info(
                         f"Stop-recording received, flushing buffer: '{self._buffer.strip()}'"
                     )
-                    timestamp = datetime.now(UTC).isoformat()
-                    consolidated_frame = TranscriptionFrame(
-                        text=self._buffer.strip(),
-                        user_id=self._last_user_id,
-                        timestamp=timestamp,
-                        language=self._last_language,
+                    await self._emit_transcription(direction)
+                elif self._speech_detected:
+                    # Speech was detected but buffer is empty - STT may still be processing
+                    # Wait for transcription to arrive with timeout
+                    logger.info(
+                        "Stop-recording received, speech detected but buffer empty, waiting for STT..."
                     )
-                    await self.push_frame(consolidated_frame, direction)
+                    await self._wait_for_transcription(direction)
                 else:
-                    # Buffer is empty - send immediate response so client can reset
-                    logger.info("Stop-recording received but buffer is empty, sending empty response")
-                    empty_response_message = {
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {"type": "recording-complete", "hasContent": False},
-                    }
-                    await self.push_frame(
-                        OutputTransportMessageFrame(message=empty_response_message), direction
-                    )
-                # Always reset buffer state
-                self._buffer = ""
-                self._last_user_id = "user"
-                self._last_language = None
+                    # No speech detected - send empty response immediately
+                    logger.info("Stop-recording received, no speech detected, sending empty response")
+                    await self._emit_empty_response(direction)
+
+                # Always reset state
+                self._reset_state()
                 # Don't pass through the client message frame
                 return
 
         # Pass through all other frames unchanged
         await self.push_frame(frame, direction)
+
+    async def _emit_transcription(self, direction: FrameDirection) -> None:
+        """Emit the buffered transcription as a consolidated frame."""
+        timestamp = datetime.now(UTC).isoformat()
+        consolidated_frame = TranscriptionFrame(
+            text=self._buffer.strip(),
+            user_id=self._last_user_id,
+            timestamp=timestamp,
+            language=self._last_language,
+        )
+        await self.push_frame(consolidated_frame, direction)
+
+    async def _emit_empty_response(self, direction: FrameDirection) -> None:
+        """Send an empty response message to the client."""
+        empty_response_message = {
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {"type": "recording-complete", "hasContent": False},
+        }
+        await self.push_frame(
+            OutputTransportMessageFrame(message=empty_response_message), direction
+        )
+
+    async def _wait_for_transcription(self, direction: FrameDirection) -> None:
+        """Wait for transcription to arrive from STT with timeout.
+
+        Polls for transcription arrival at regular intervals. If transcription
+        arrives within the timeout, emits it. Otherwise, sends empty response.
+        """
+        elapsed = 0.0
+        while elapsed < TRANSCRIPTION_WAIT_TIMEOUT_SECONDS:
+            # Check if transcription arrived
+            if self._buffer.strip():
+                logger.info(
+                    f"Transcription arrived after {elapsed:.0f}ms: '{self._buffer.strip()}'"
+                )
+                await self._emit_transcription(direction)
+                return
+
+            # Wait a short interval before checking again
+            await asyncio.sleep(TRANSCRIPTION_POLL_INTERVAL_SECONDS)
+            elapsed += TRANSCRIPTION_POLL_INTERVAL_SECONDS
+
+        # Timeout - no transcription arrived
+        logger.warning(
+            f"Timeout waiting for transcription after {TRANSCRIPTION_WAIT_TIMEOUT_SECONDS}s"
+        )
+        await self._emit_empty_response(direction)
+
+    def _reset_state(self) -> None:
+        """Reset all buffer state for next recording session."""
+        self._buffer = ""
+        self._last_user_id = "user"
+        self._last_language = None
+        self._speech_detected = False
+        self._transcription_arrived.clear()

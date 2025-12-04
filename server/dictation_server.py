@@ -19,8 +19,12 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
+    MetricsFrame,
     OutputTransportMessageFrame,
     TranscriptionFrame,
+    UserSpeakingFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -44,7 +48,11 @@ app = typer.Typer(help="Voice dictation WebSocket server")
 
 
 class DebugFrameProcessor(FrameProcessor):
-    """Debug processor that logs all incoming frames for troubleshooting."""
+    """Debug processor that logs important frames for troubleshooting.
+
+    Filters out noisy frames (UserSpeakingFrame, MetricsFrame) and only logs
+    significant events like speech start/stop and transcriptions.
+    """
 
     def __init__(self, name: str = "debug", **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -56,15 +64,21 @@ class DebugFrameProcessor(FrameProcessor):
 
         if isinstance(frame, InputAudioRawFrame):
             self._audio_frame_count += 1
-            if self._audio_frame_count <= 5 or self._audio_frame_count % 100 == 0:
+            # Only log first few and periodic audio frames
+            if self._audio_frame_count <= 3 or self._audio_frame_count % 500 == 0:
                 logger.info(
                     f"[{self._name}] Audio frame #{self._audio_frame_count}: "
                     f"{len(frame.audio)} bytes, {frame.sample_rate}Hz, {frame.num_channels}ch"
                 )
         elif isinstance(frame, TranscriptionFrame):
             logger.info(f"[{self._name}] TRANSCRIPTION: '{frame.text}'")
-        else:
-            logger.info(f"[{self._name}] Frame: {type(frame).__name__}")
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            logger.info(f"[{self._name}] Speech started")
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            logger.info(f"[{self._name}] Speech stopped")
+        # Skip noisy frames: UserSpeakingFrame (fires every ~15ms), MetricsFrame
+        elif not isinstance(frame, (UserSpeakingFrame, MetricsFrame)):
+            logger.debug(f"[{self._name}] Frame: {type(frame).__name__}")
 
         await self.push_frame(frame, direction)
 
