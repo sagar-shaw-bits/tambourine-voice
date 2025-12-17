@@ -4,6 +4,12 @@
 
 # Tambourine
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <a href="https://discord.gg/dUyuXWVJ2a"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://deepwiki.com/kstonekuan/tambourine-voice"><img src="https://deepwiki.com/badge.svg" alt="DeepWiki"></a>
+</p>
+
 Your personal voice interface into any app. Speak naturally and your words appear wherever your cursor is, powered by customizable AI voice dictation.
 
 Open-source alternative to [Wispr Flow](https://wisprflow.ai) and [Superwhisper](https://superwhisper.com).
