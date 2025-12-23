@@ -1,6 +1,10 @@
 import { Loader } from "@mantine/core";
 import { useResizeObserver, useTimeout } from "@mantine/hooks";
-import { PipecatClient, RTVIEvent } from "@pipecat-ai/client-js";
+import {
+	type BotLLMTextData,
+	PipecatClient,
+	RTVIEvent,
+} from "@pipecat-ai/client-js";
 import {
 	PipecatClientProvider,
 	usePipecatClient,
@@ -26,14 +30,9 @@ import {
 	tauriAPI,
 } from "./lib/tauri";
 import { useRecordingStore } from "./stores/recordingStore";
-import "./app.css";
+import "./overlay-global.css";
 
 // Zod schemas for message validation
-const TranscriptMessageSchema = z.object({
-	type: z.literal("transcript"),
-	text: z.string(),
-});
-
 const RecordingCompleteMessageSchema = z.object({
 	type: z.literal("recording-complete"),
 	hasContent: z.boolean().optional(),
@@ -51,6 +50,27 @@ const ConfigErrorMessageSchema = z.object({
 	type: z.literal("config-error"),
 	setting: z.string(),
 	error: z.string(),
+});
+
+// Available providers schema (relayed to main window for settings UI)
+const AvailableProvidersMessageSchema = z.object({
+	type: z.literal("available-providers"),
+	stt: z.array(
+		z.object({
+			value: z.string(),
+			label: z.string(),
+			is_local: z.boolean(),
+			model: z.string().nullable(),
+		}),
+	),
+	llm: z.array(
+		z.object({
+			value: z.string(),
+			label: z.string(),
+			is_local: z.boolean(),
+			model: z.string().nullable(),
+		}),
+	),
 });
 
 // Non-empty array type for type-safe batched sends
@@ -97,6 +117,9 @@ function RecordingControl() {
 
 	// Track if we've ever connected (to distinguish initial connection from reconnection)
 	const hasConnectedRef = useRef(false);
+
+	// Accumulate LLM text chunks (RTVIObserver streams text in chunks)
+	const llmTextAccumulatorRef = useRef("");
 
 	// Track previous settings to detect actual changes (for syncing while connected)
 	const prevSettingsRef = useRef(settings);
@@ -243,6 +266,9 @@ function RecordingControl() {
 
 			// Sync settings to server via data channel (with delay to ensure connection is stable)
 			setTimeout(() => {
+				// Request available providers (for settings UI in main window)
+				client?.sendClientMessage("get-available-providers", {});
+
 				if (settings?.cleanup_prompt_sections) {
 					client?.sendClientMessage("set-prompt-sections", {
 						sections: settings.cleanup_prompt_sections,
@@ -361,26 +387,53 @@ function RecordingControl() {
 		}, [client, serverUrl, handleDisconnected]),
 	);
 
-	// Server message handler
+	// LLM text streaming handlers (using official RTVI protocol via RTVIObserver)
+	useRTVIClientEvent(
+		RTVIEvent.BotLlmStarted,
+		useCallback(() => {
+			// Reset accumulator when LLM starts generating
+			llmTextAccumulatorRef.current = "";
+		}, []),
+	);
+
+	useRTVIClientEvent(
+		RTVIEvent.BotLlmText,
+		useCallback((data: BotLLMTextData) => {
+			// Accumulate text chunks from LLM
+			llmTextAccumulatorRef.current += data.text;
+		}, []),
+	);
+
+	useRTVIClientEvent(
+		RTVIEvent.BotLlmStopped,
+		useCallback(async () => {
+			clearResponseTimeout();
+			const text = llmTextAccumulatorRef.current.trim();
+			llmTextAccumulatorRef.current = "";
+
+			if (text) {
+				console.debug("[Pipecat] LLM response:", text);
+				try {
+					await typeTextMutation.mutateAsync(text);
+				} catch (error) {
+					console.error("[Pipecat] Failed to type text:", error);
+				}
+				addHistoryEntry.mutate(text);
+			}
+			handleResponse();
+		}, [
+			clearResponseTimeout,
+			typeTextMutation,
+			addHistoryEntry,
+			handleResponse,
+		]),
+	);
+
+	// Server message handler (for custom messages: config-updated, recording-complete, etc.)
 	useRTVIClientEvent(
 		RTVIEvent.ServerMessage,
 		useCallback(
 			async (message: unknown) => {
-				const transcriptResult = TranscriptMessageSchema.safeParse(message);
-				if (transcriptResult.success) {
-					clearResponseTimeout();
-					const { text } = transcriptResult.data;
-					console.debug("[Pipecat] Transcript:", text);
-					try {
-						await typeTextMutation.mutateAsync(text);
-					} catch (error) {
-						console.error("[Pipecat] Failed to type text:", error);
-					}
-					addHistoryEntry.mutate(text);
-					handleResponse();
-					return;
-				}
-
 				const recordingCompleteResult =
 					RecordingCompleteMessageSchema.safeParse(message);
 				if (recordingCompleteResult.success) {
@@ -410,8 +463,19 @@ function RecordingControl() {
 					});
 					return;
 				}
+
+				// Available providers - relay to main window for settings UI
+				const availableProvidersResult =
+					AvailableProvidersMessageSchema.safeParse(message);
+				if (availableProvidersResult.success) {
+					tauriAPI.emitAvailableProviders({
+						stt: availableProvidersResult.data.stt,
+						llm: availableProvidersResult.data.llm,
+					});
+					return;
+				}
 			},
-			[clearResponseTimeout, typeTextMutation, addHistoryEntry, handleResponse],
+			[clearResponseTimeout, handleResponse],
 		),
 	);
 
@@ -477,7 +541,7 @@ function RecordingControl() {
 				height: "fit-content",
 				backgroundColor: "rgba(0, 0, 0, 0.9)",
 				borderRadius: 12,
-				border: "1px solid rgba(128, 128, 128, 0.5)",
+				border: "1px solid rgba(128, 128, 128, 0.9)",
 				padding: 2,
 				cursor: "grab",
 				userSelect: "none",
