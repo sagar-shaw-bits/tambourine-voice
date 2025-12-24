@@ -256,6 +256,62 @@ function RecordingControl() {
 		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
 	}, [client]);
 
+	// Build config messages from current settings (used for initial sync and change detection)
+	const buildConfigMessages = useCallback(
+		(
+			currentSettings: typeof settings,
+			prevSettings?: typeof settings,
+		): ConfigMessage[] => {
+			const messages: ConfigMessage[] = [];
+
+			const hasChanged = (
+				key: keyof NonNullable<typeof settings>,
+				useJsonCompare = false,
+			) => {
+				const current = currentSettings?.[key];
+				const prev = prevSettings?.[key];
+				if (current == null) return false;
+				if (prevSettings === undefined) return true; // Initial sync
+				return useJsonCompare
+					? JSON.stringify(current) !== JSON.stringify(prev)
+					: current !== prev;
+			};
+
+			if (hasChanged("cleanup_prompt_sections", true)) {
+				messages.push({
+					type: "set-prompt-sections",
+					data: {
+						sections:
+							currentSettings?.cleanup_prompt_sections as CleanupPromptSections,
+					},
+				});
+			}
+			if (hasChanged("stt_provider")) {
+				messages.push({
+					type: "set-stt-provider",
+					data: { provider: currentSettings?.stt_provider as string },
+				});
+			}
+			if (hasChanged("llm_provider")) {
+				messages.push({
+					type: "set-llm-provider",
+					data: { provider: currentSettings?.llm_provider as string },
+				});
+			}
+			if (hasChanged("stt_timeout_seconds")) {
+				messages.push({
+					type: "set-stt-timeout",
+					data: {
+						timeout_seconds: currentSettings?.stt_timeout_seconds as number,
+					},
+				});
+			}
+
+			return messages;
+		},
+		[],
+	);
+
 	// Connection event handler
 	useRTVIClientEvent(
 		RTVIEvent.Connected,
@@ -266,30 +322,21 @@ function RecordingControl() {
 
 			// Sync settings to server via data channel (with delay to ensure connection is stable)
 			setTimeout(() => {
-				// Request available providers (for settings UI in main window)
-				client?.sendClientMessage("get-available-providers", {});
+				if (!client) return;
 
-				if (settings?.cleanup_prompt_sections) {
-					client?.sendClientMessage("set-prompt-sections", {
-						sections: settings.cleanup_prompt_sections,
-					});
-				}
-				if (settings?.stt_provider) {
-					client?.sendClientMessage("set-stt-provider", {
-						provider: settings.stt_provider,
-					});
-				}
-				if (settings?.llm_provider) {
-					client?.sendClientMessage("set-llm-provider", {
-						provider: settings.llm_provider,
-					});
+				// Request available providers (for settings UI in main window)
+				client.sendClientMessage("get-available-providers", {});
+
+				// Send all current settings
+				const messages = buildConfigMessages(settings);
+				if (messages.length > 0) {
+					sendConfigMessages(client, messages as NonEmptyArray<ConfigMessage>);
 				}
 			}, 1000);
-		}, [client, settings, handleConnected]),
+		}, [client, settings, handleConnected, buildConfigMessages]),
 	);
 
 	// Sync settings when they change WHILE already connected
-	// Only sends the specific settings that changed, not all of them
 	useEffect(() => {
 		const prevSettings = prevSettingsRef.current;
 		prevSettingsRef.current = settings;
@@ -298,52 +345,11 @@ function RecordingControl() {
 		if (!client || state !== "idle") return;
 		if (prevSettings === settings) return;
 
-		// Collect only the settings that changed
-		const messages: ConfigMessage[] = [];
-
-		if (
-			settings?.cleanup_prompt_sections != null &&
-			JSON.stringify(settings.cleanup_prompt_sections) !==
-				JSON.stringify(prevSettings?.cleanup_prompt_sections)
-		) {
-			messages.push({
-				type: "set-prompt-sections",
-				data: { sections: settings.cleanup_prompt_sections },
-			});
-		}
-		if (
-			settings?.stt_provider != null &&
-			settings.stt_provider !== prevSettings?.stt_provider
-		) {
-			messages.push({
-				type: "set-stt-provider",
-				data: { provider: settings.stt_provider },
-			});
-		}
-		if (
-			settings?.llm_provider != null &&
-			settings.llm_provider !== prevSettings?.llm_provider
-		) {
-			messages.push({
-				type: "set-llm-provider",
-				data: { provider: settings.llm_provider },
-			});
-		}
-		if (
-			settings?.stt_timeout_seconds != null &&
-			settings.stt_timeout_seconds !== prevSettings?.stt_timeout_seconds
-		) {
-			messages.push({
-				type: "set-stt-timeout",
-				data: { timeout_seconds: settings.stt_timeout_seconds },
-			});
-		}
-
-		// Only send if there are messages (type guard ensures non-empty)
+		const messages = buildConfigMessages(settings, prevSettings);
 		if (messages.length > 0) {
 			sendConfigMessages(client, messages as NonEmptyArray<ConfigMessage>);
 		}
-	}, [client, state, settings]);
+	}, [client, state, settings, buildConfigMessages]);
 
 	// Disconnection event handler
 	// Handles cleanup, state transition, and reconnection
@@ -433,7 +439,7 @@ function RecordingControl() {
 	useRTVIClientEvent(
 		RTVIEvent.ServerMessage,
 		useCallback(
-			async (message: unknown) => {
+			(message: unknown) => {
 				const recordingCompleteResult =
 					RecordingCompleteMessageSchema.safeParse(message);
 				if (recordingCompleteResult.success) {
