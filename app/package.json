@@ -1,7 +1,7 @@
 {
 	"name": "tambourine-voice",
 	"version": "0.1.0",
-	"description": "Customizable AI-powered voice dictation",
+	"description": "Your personal voice interface for any app",
 	"scripts": {
 		"dev": "tauri dev",
 		"dev:vite": "vite",

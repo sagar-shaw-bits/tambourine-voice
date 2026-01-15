@@ -1,7 +1,7 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"productName": "Tambourine",
-	"identifier": "com.tambourine-voice.app",
+	"identifier": "com.kingstonkuan.tambourine",
 	"version": "0.1.0",
 	"build": {
 		"beforeDevCommand": "pnpm dev:vite",
@@ -30,8 +30,8 @@
 	"bundle": {
 		"active": true,
 		"targets": "all",
-		"shortDescription": "Customizable AI-powered voice dictation tool",
-		"longDescription": "Open-source alternative to Wispr Flow and SuperWhisper. Speak and your words are typed wherever your cursor is.",
+		"shortDescription": "Your personal voice interface for any app",
+		"longDescription": "Your personal voice interface for any app. Speak naturally and your words appear wherever your cursor is, powered by customizable AI voice dictation.",
 		"license": "AGPL-3.0",
 		"icon": [
 			"icons/32x32.png",

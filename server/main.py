@@ -70,7 +70,7 @@ MDNS_CANDIDATE_PATTERN: Final[re.Pattern[str]] = re.compile(
 def filter_mdns_candidates_from_sdp(sdp: str) -> str:
     """Remove mDNS ICE candidates from SDP to prevent aioice resolution issues.
 
-    macOS WebKit sends mDNS candidates (*.local addresses) for privacy, but these
+    mDNS candidates (*.local addresses) are sent for privacy, but these
     cannot be resolved on cloud servers (different network). The aioice library
     accumulates stale state when mDNS resolution fails, causing subsequent
     connections to fail with 'NoneType' has no attribute 'sendto'.
@@ -336,7 +336,7 @@ app.add_middleware(
 
 # Global exception handler to ensure CORS headers are included in error responses.
 # FastAPI's CORSMiddleware may not add headers to unhandled exception responses,
-# causing WebKit (macOS) to block them and report misleading "CORS errors".
+# causing misleading "CORS errors".
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Ensure CORS headers are included even in error responses."""
@@ -382,11 +382,11 @@ async def webrtc_offer(
     """
     services: AppServices = request.app.state.services
 
-    # Filter mDNS candidates from SDP to prevent aioice resolution issues on macOS.
+    # Filter mDNS candidates from SDP to prevent aioice resolution issues.
     # See filter_mdns_candidates_from_sdp() docstring for details.
     filtered_sdp = filter_mdns_candidates_from_sdp(webrtc_request.sdp)
     if filtered_sdp != webrtc_request.sdp:
-        logger.info("Filtered mDNS candidates from SDP offer (macOS client)")
+        logger.info("Filtered mDNS candidates from SDP offer")
         webrtc_request = SmallWebRTCRequest(
             sdp=filtered_sdp,
             type=webrtc_request.type,
@@ -417,7 +417,7 @@ async def webrtc_ice_candidate(
     """Handle ICE candidate patches for WebRTC connections.
 
     Filters mDNS ICE candidates sent via ICE trickle to prevent aioice
-    resolution issues. macOS WebKit sends mDNS candidates (.local addresses)
+    resolution issues. mDNS candidates (.local addresses) are sent
     for privacy, but these cause state accumulation issues in aioice.
     """
     services: AppServices = request.app.state.services
@@ -432,9 +432,7 @@ async def webrtc_ice_candidate(
         filtered_count = original_count - len(filtered_candidates)
 
         if filtered_count > 0:
-            logger.info(
-                f"Filtered {filtered_count} mDNS ICE candidates from trickle (macOS client)"
-            )
+            logger.info(f"Filtered {filtered_count} mDNS ICE candidates from trickle")
             patch_request = SmallWebRTCPatchRequest(
                 pc_id=patch_request.pc_id,
                 candidates=filtered_candidates,

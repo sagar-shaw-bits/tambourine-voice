@@ -1,7 +1,7 @@
 [project]
 name = "tambourine-voice"
 version = "0.1.0"
-description = "Customizable AI-powered voice dictation"
+description = "Your personal voice interface for any app"
 authors = [{ name = "kstonekuan" }]
 license = "AGPL-3.0-only"
 readme = "../README.md"

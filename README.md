@@ -10,9 +10,9 @@
   <a href="https://deepwiki.com/kstonekuan/tambourine-voice"><img src="https://deepwiki.com/badge.svg" alt="DeepWiki"></a>
 </p>
 
-Your personal voice interface into any app. Speak naturally and your words appear wherever your cursor is, powered by customizable AI voice dictation.
+Your personal voice interface for any app. Speak naturally and your words appear wherever your cursor is, powered by customizable AI voice dictation.
 
-Open-source alternative to [Wispr Flow](https://wisprflow.ai) and [Superwhisper](https://superwhisper.com).
+Open-source alternative to [Wispr Flow](https://wisprflow.ai), [Superwhisper](https://superwhisper.com), and [Willow](https://willowvoice.com).
 
 > ⚠️ **Build in Progress**
 > This project is under active development. Core features work well, but expect breaking changes to the code, architecture, and configuration as the project evolves.
