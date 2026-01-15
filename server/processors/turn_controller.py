@@ -1,7 +1,7 @@
 """Turn controller for dictation recording lifecycle.
 
 Controls turn boundaries and coordinates timing between:
-- NVIDIA STT service (via NVidiaSTTFinalizeFrame upstream for manual stop)
+- STT services (via VADUserStoppedSpeakingFrame upstream for manual stop)
 - LLMUserAggregator (via UserStartedSpeakingFrame/UserStoppedSpeakingFrame)
 
 Does NOT buffer transcriptions - the LLMUserAggregator handles that.
@@ -34,7 +34,6 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 
-from frames import NVidiaSTTFinalizeFrame
 from utils.logger import logger
 
 if TYPE_CHECKING:
@@ -217,8 +216,8 @@ class TurnController(FrameProcessor):
                     f"Stop-recording received, waiting for STT to finalize "
                     f"(has_content: {has_content})"
                 )
-                # Signal NVIDIA STT to finalize any pending transcription
-                await self.push_frame(NVidiaSTTFinalizeFrame(), FrameDirection.UPSTREAM)
+                # Signal STT to finalize any pending transcription
+                await self.push_frame(VADUserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
                 self._state = WaitingForSTTState(
                     has_content=has_content,
                     direction=direction,
