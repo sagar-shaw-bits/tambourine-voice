@@ -22,13 +22,15 @@ tambourine-voice-server = "main:app"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
-    "ruff>=0.14.11",
+    "ruff>=0.14.13",
     "ty>=0.0.12",       #
     "yamllint>=1.38.0",
 ]
 
 [build-system]
-requires = ["uv_build>=0.9.15"]
+requires = [
+    "uv_build>=0.9.26", #
+]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]

@@ -1,5 +1,6 @@
 import { Button, Loader, TextInput } from "@mantine/core";
-import { Check, RefreshCw, X } from "lucide-react";
+import { notifications } from "@mantine/notifications";
+import { Check, Copy, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSettings, useUpdateServerUrl } from "../../lib/queries";
 import { DEFAULT_SERVER_URL, tauriAPI } from "../../lib/tauri";
@@ -12,18 +13,33 @@ export function ConnectionSettings() {
 	const updateServerUrl = useUpdateServerUrl();
 	const [localUrl, setLocalUrl] = useState<string | null>(null);
 	const [pingStatus, setPingStatus] = useState<PingStatus>("idle");
+	const [clientUUID, setClientUUID] = useState<string | null>(null);
+	const [uuidCopied, setUuidCopied] = useState(false);
 
-	// Connection state from store
+	useEffect(() => {
+		tauriAPI.getClientUUID().then(setClientUUID);
+	}, []);
+
+	const handleCopyUUID = useCallback(() => {
+		if (!clientUUID) return;
+		navigator.clipboard.writeText(clientUUID);
+		setUuidCopied(true);
+		setTimeout(() => setUuidCopied(false), 2000);
+	}, [clientUUID]);
+
 	const connectionState = useRecordingStore((s) => s.state);
-	const setConnectionState = useRecordingStore((s) => s.setState);
+	const setState = useRecordingStore((s) => s.setState);
 
-	// Listen for connection state changes from the overlay window
 	useEffect(() => {
 		let unlisten: (() => void) | undefined;
 
 		const setup = async () => {
 			unlisten = await tauriAPI.onConnectionStateChanged((newState) => {
-				setConnectionState(newState);
+				setState(newState);
+				// Reload UUID when connection becomes idle (may have re-registered)
+				if (newState === "idle") {
+					tauriAPI.getClientUUID().then(setClientUUID);
+				}
 			});
 		};
 
@@ -32,7 +48,30 @@ export function ConnectionSettings() {
 		return () => {
 			unlisten?.();
 		};
-	}, [setConnectionState]);
+	}, [setState]);
+
+	useEffect(() => {
+		let unlisten: (() => void) | undefined;
+
+		const setup = async () => {
+			unlisten = await tauriAPI.onReconnectResult((result) => {
+				if (!result.success) {
+					notifications.show({
+						title: "Reconnection Failed",
+						message: result.error || "Could not reconnect to the server",
+						color: "red",
+						autoClose: 5000,
+					});
+				}
+			});
+		};
+
+		setup();
+
+		return () => {
+			unlisten?.();
+		};
+	}, []);
 
 	// Use local state if user is editing, otherwise use saved value
 	const displayUrl = localUrl ?? settings?.server_url ?? DEFAULT_SERVER_URL;
@@ -96,6 +135,8 @@ export function ConnectionSettings() {
 
 	// Connection state display helpers
 	const isConnecting = connectionState === "connecting";
+	const isReconnecting = connectionState === "reconnecting";
+	const isButtonDisabled = isConnecting || isReconnecting;
 
 	const getStateDisplay = () => {
 		switch (connectionState) {
@@ -104,6 +145,11 @@ export function ConnectionSettings() {
 			case "connecting":
 				return {
 					text: "Connecting...",
+					color: "var(--mantine-color-yellow-6)",
+				};
+			case "reconnecting":
+				return {
+					text: "Reconnecting...",
 					color: "var(--mantine-color-yellow-6)",
 				};
 			case "idle":
@@ -138,7 +184,7 @@ export function ConnectionSettings() {
 					<div>
 						<p className="settings-label">Status</p>
 						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-							{isConnecting ? (
+							{isConnecting || isReconnecting ? (
 								<Loader size={12} color="yellow" />
 							) : (
 								<span
@@ -164,13 +210,14 @@ export function ConnectionSettings() {
 					</div>
 					<Button
 						onClick={handleReconnect}
-						disabled={isConnecting}
+						disabled={isButtonDisabled}
+						loading={isReconnecting}
 						size="sm"
 						variant="light"
 						color="gray"
-						leftSection={<RefreshCw size={14} />}
+						leftSection={!isReconnecting && <RefreshCw size={14} />}
 					>
-						Reconnect
+						{isReconnecting ? "Reconnecting..." : "Reconnect"}
 					</Button>
 				</div>
 			</div>
@@ -253,6 +300,45 @@ export function ConnectionSettings() {
 							</Button>
 						)}
 					</div>
+				</div>
+			</div>
+
+			{/* Client ID Row */}
+			<div className="settings-card" style={{ marginTop: 12 }}>
+				<div
+					className="settings-row"
+					style={{ justifyContent: "space-between", alignItems: "center" }}
+				>
+					<div>
+						<p className="settings-label">Client ID</p>
+						<p
+							style={{
+								fontFamily: "monospace",
+								fontSize: "13px",
+								color: clientUUID
+									? "var(--mantine-color-dimmed)"
+									: "var(--mantine-color-gray-6)",
+								fontStyle: clientUUID ? "normal" : "italic",
+								margin: 0,
+								marginTop: 4,
+							}}
+						>
+							{clientUUID ?? "Not assigned yet"}
+						</p>
+					</div>
+					{clientUUID && (
+						<Button
+							onClick={handleCopyUUID}
+							size="sm"
+							variant="light"
+							color={uuidCopied ? "green" : "gray"}
+							leftSection={
+								uuidCopied ? <Check size={14} /> : <Copy size={14} />
+							}
+						>
+							{uuidCopied ? "Copied" : "Copy"}
+						</Button>
+					)}
 				</div>
 			</div>
 		</div>

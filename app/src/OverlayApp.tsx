@@ -2,7 +2,7 @@ import { Loader } from "@mantine/core";
 import { useResizeObserver, useTimeout } from "@mantine/hooks";
 import {
 	type BotLLMTextData,
-	PipecatClient,
+	type PipecatClient,
 	RTVIEvent,
 } from "@pipecat-ai/client-js";
 import {
@@ -10,69 +10,62 @@ import {
 	usePipecatClient,
 	useRTVIClientEvent,
 } from "@pipecat-ai/client-react";
-import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
+import type { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { ThemeProvider, UserAudioComponent } from "@pipecat-ai/voice-ui-kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useDrag } from "@use-gesture/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { match } from "ts-pattern";
 import { z } from "zod";
 import Logo from "./assets/logo.svg?react";
+import {
+	ConnectionProvider,
+	useConnectionClient,
+	useConnectionSend,
+	useConnectionState,
+} from "./contexts/ConnectionContext";
 import { useNativeAudioTrack } from "./hooks/useNativeAudioTrack";
+import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
 import {
-	useAddHistoryEntry,
-	useServerUrl,
-	useSettings,
-	useTypeText,
-} from "./lib/queries";
-import {
-	type CleanupPromptSections,
-	type ConnectionState,
-	tauriAPI,
-} from "./lib/tauri";
-import { useRecordingStore } from "./stores/recordingStore";
+	matchSendResult,
+	safeSendClientMessage,
+} from "./lib/safeSendClientMessage";
+import { type CleanupPromptSections, tauriAPI } from "./lib/tauri";
 import "./overlay-global.css";
 
-// Zod schemas for message validation
-const RecordingCompleteMessageSchema = z.object({
-	type: z.literal("recording-complete"),
-	hasContent: z.boolean().optional(),
+const SERVER_RESPONSE_TIMEOUT_MS = 10_000;
+
+// Server message schemas as a discriminated union for single-parse handling
+const ProviderSchema = z.object({
+	value: z.string(),
+	label: z.string(),
+	is_local: z.boolean(),
+	model: z.string().nullable(),
 });
 
-// Config response schemas (relayed to main window for notifications)
-const ConfigUpdatedMessageSchema = z.object({
-	type: z.literal("config-updated"),
-	setting: z.string(),
-	value: z.unknown(),
-	success: z.literal(true),
-});
-
-const ConfigErrorMessageSchema = z.object({
-	type: z.literal("config-error"),
-	setting: z.string(),
-	error: z.string(),
-});
-
-// Available providers schema (relayed to main window for settings UI)
-const AvailableProvidersMessageSchema = z.object({
-	type: z.literal("available-providers"),
-	stt: z.array(
-		z.object({
-			value: z.string(),
-			label: z.string(),
-			is_local: z.boolean(),
-			model: z.string().nullable(),
-		}),
-	),
-	llm: z.array(
-		z.object({
-			value: z.string(),
-			label: z.string(),
-			is_local: z.boolean(),
-			model: z.string().nullable(),
-		}),
-	),
-});
+const ServerMessageSchema = z.discriminatedUnion("type", [
+	z.object({
+		type: z.literal("recording-complete"),
+		hasContent: z.boolean().optional(),
+	}),
+	z.object({
+		type: z.literal("config-updated"),
+		setting: z.string(),
+		value: z.unknown(),
+		success: z.literal(true),
+	}),
+	z.object({
+		type: z.literal("config-error"),
+		setting: z.string(),
+		error: z.string(),
+	}),
+	z.object({
+		type: z.literal("available-providers"),
+		stt: z.array(ProviderSchema),
+		llm: z.array(ProviderSchema),
+	}),
+]);
 
 // Non-empty array type for type-safe batched sends
 type NonEmptyArray<T> = [T, ...T[]];
@@ -84,13 +77,28 @@ type ConfigMessage =
 	| { type: "set-llm-provider"; data: { provider: string } }
 	| { type: "set-stt-timeout"; data: { timeout_seconds: number } };
 
-// Helper to send multiple config messages - only callable with non-empty list
 function sendConfigMessages(
 	client: PipecatClient,
 	messages: NonEmptyArray<ConfigMessage>,
+	onCommunicationError?: (error: string) => void,
 ) {
 	for (const { type, data } of messages) {
-		client.sendClientMessage(type, data);
+		const result = safeSendClientMessage(
+			client,
+			type,
+			data,
+			onCommunicationError,
+		);
+		// If a message fails to send, stop sending further messages
+		// The reconnection will handle re-syncing all settings
+		const shouldContinue = matchSendResult(result, {
+			onSuccess: () => true,
+			onNotReady: () => false,
+			onSendFailed: () => false,
+		});
+		if (!shouldContinue) {
+			break;
+		}
 	}
 }
 
@@ -123,24 +131,48 @@ const InitialLoadingSpinner = (
 	</div>
 );
 
+type DisplayState =
+	| "disconnected"
+	| "connecting"
+	| "reconnecting"
+	| "idle"
+	| "recording"
+	| "processing";
+
+/**
+ * Helper to convert XState state value to the ConnectionState string type
+ * used by the UI and Tauri events.
+ */
+function getDisplayState(
+	stateValue: string | Record<string, unknown>,
+): DisplayState {
+	// XState state values can be strings or objects (for nested states)
+	const state =
+		typeof stateValue === "string" ? stateValue : Object.keys(stateValue)[0];
+
+	return match(state)
+		.with("disconnected", () => "disconnected" as const)
+		.with("initializing", "connecting", () => "connecting" as const)
+		.with("retrying", () => "reconnecting" as const)
+		.with("idle", () => "idle" as const)
+		.with("recording", () => "recording" as const)
+		.with("processing", () => "processing" as const)
+		.otherwise(() => "disconnected" as const);
+}
+
 function RecordingControl() {
 	const client = usePipecatClient();
 	const queryClient = useQueryClient();
-	const {
-		state,
-		setClient,
-		startRecording,
-		stopRecording,
-		handleResponse,
-		handleConnected,
-		handleDisconnected,
-	} = useRecordingStore();
+	const connectionState = useConnectionState();
+	const send = useConnectionSend();
+
+	// Convert XState state to display state
+	const displayState = getDisplayState(connectionState);
 
 	// Use Mantine's useResizeObserver hook
 	const [containerRef, rect] = useResizeObserver();
 
-	// Ref for tracking drag state
-	const hasDragStartedRef = useRef(false);
+	const hasWindowDragStartedRef = useRef(false);
 
 	// State and refs for mic acquisition optimization
 	const [isMicAcquiring, setIsMicAcquiring] = useState(false);
@@ -158,80 +190,22 @@ function RecordingControl() {
 		stop: stopNativeCapture,
 	} = useNativeAudioTrack();
 
-	const { data: serverUrl } = useServerUrl();
 	const { data: settings } = useSettings();
 
-	// Track if we've ever connected (to distinguish initial connection from reconnection)
-	const hasConnectedRef = useRef(false);
-
-	// Track previous server URL to detect changes
-	const previousServerUrlRef = useRef<string | null>(null);
-
-	// Accumulate LLM text chunks (RTVIObserver streams text in chunks)
-	const llmTextAccumulatorRef = useRef("");
+	const streamedLlmResponseChunksRef = useRef("");
 
 	// Track previous settings to detect actual changes (for syncing while connected)
 	const prevSettingsRef = useRef(settings);
 
-	// Connection management: handles initial connection and URL changes
-	// SmallWebRTC handles reconnection internally (3 attempts)
-	useEffect(() => {
-		if (!client || !serverUrl) return;
-
-		const previousUrl = previousServerUrlRef.current;
-		previousServerUrlRef.current = serverUrl;
-
-		// If URL changed, just disconnect - the Disconnected handler will reconnect
-		if (previousUrl && previousUrl !== serverUrl) {
-			console.log(
-				`[Pipecat] Server URL changed from ${previousUrl} to ${serverUrl}`,
-			);
-			client.disconnect();
-			return;
-		}
-
-		// Initial connection only
-		if (!previousUrl) {
-			client
-				.connect({
-					webrtcRequestParams: { endpoint: `${serverUrl}/api/offer` },
-				})
-				.catch((error: unknown) => {
-					console.error("[Pipecat] Connection failed:", error);
-				});
-		}
-	}, [client, serverUrl]);
-
-	// TanStack Query hooks
 	const typeTextMutation = useTypeText();
 	const addHistoryEntry = useAddHistoryEntry();
 
-	// Response timeout (10s)
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
 		useTimeout(() => {
-			const currentState = useRecordingStore.getState().state;
-			if (currentState === "processing") {
-				handleResponse(); // Reset to idle
+			if (displayState === "processing") {
+				send({ type: "RESPONSE_RECEIVED" });
 			}
-		}, 10000);
-
-	// Keep store client in sync
-	useEffect(() => {
-		setClient(client ?? null);
-	}, [client, setClient]);
-
-	// Emit connection state changes to other windows (main window)
-	useEffect(() => {
-		const unsubscribe = useRecordingStore.subscribe((newState, prevState) => {
-			if (newState.state !== prevState.state) {
-				tauriAPI.emitConnectionState(newState.state as ConnectionState);
-			}
-		});
-		// Emit initial state (get from store directly to avoid dependency issues)
-		const initialState = useRecordingStore.getState().state;
-		tauriAPI.emitConnectionState(initialState as ConnectionState);
-		return unsubscribe;
-	}, []);
+		}, SERVER_RESPONSE_TIMEOUT_MS);
 
 	// Auto-resize window to fit content using Mantine's useResizeObserver
 	useEffect(() => {
@@ -292,8 +266,23 @@ function RecordingControl() {
 			// Reset prepared state for next recording
 			micPreparedRef.current = false;
 
-			// startRecording() calls enableMic(true) which also takes time
-			await startRecording();
+			// Enable mic and transition to recording state
+			if (client) {
+				try {
+					client.enableMic(true);
+				} catch (error) {
+					console.warn("[Recording] Failed to enable mic:", error);
+					return;
+				}
+				send({ type: "START_RECORDING" });
+
+				// Signal server to start turn management
+				// This is required for server-side buffer management and turn detection
+				// Use safe send to detect communication failures and trigger reconnection
+				safeSendClientMessage(client, "start-recording", {}, (error) =>
+					send({ type: "COMMUNICATION_ERROR", error }),
+				);
+			}
 		} catch (error) {
 			console.warn("[Recording] Failed to start recording:", error);
 		} finally {
@@ -302,34 +291,96 @@ function RecordingControl() {
 	}, [
 		client,
 		settings?.selected_mic_id,
-		startRecording,
 		isNativeAudioReady,
 		nativeAudioTrack,
 		startNativeCapture,
+		send,
 	]);
 
 	const onStopRecording = useCallback(() => {
 		// Stop native audio capture and reset state so next recording starts fresh
 		stopNativeCapture();
 		lastMicIdRef.current = undefined;
-		if (stopRecording()) {
-			startResponseTimeout();
-		}
-	}, [stopRecording, startResponseTimeout, stopNativeCapture]);
 
-	// Hotkey event listeners
+		// Always disable mic and detach track, regardless of displayState
+		// This ensures the mic indicator goes away even if state changed
+		if (client) {
+			// Disable mic to release any browser getUserMedia stream
+			try {
+				client.enableMic(false);
+			} catch (error) {
+				console.warn("[Recording] Failed to disable mic:", error);
+			}
+
+			// Detach the native audio track from WebRTC sender to stop transmitting
+			// (enableMic only affects the client's internal track, not our injected native track)
+			try {
+				const transport = client.transport as SmallWebRTCTransport;
+				const pc = (transport as unknown as { pc?: RTCPeerConnection }).pc;
+				if (pc) {
+					const audioSender = pc
+						.getSenders()
+						.find((s) => s.track?.kind === "audio");
+					if (audioSender) {
+						audioSender.replaceTrack(null);
+					}
+				}
+			} catch (error) {
+				console.warn("[Recording] Failed to detach audio track:", error);
+			}
+
+			// Stop the audio track immediately to release the microphone
+			try {
+				const tracks = client.tracks();
+				if (tracks?.local?.audio) {
+					tracks.local.audio.stop();
+				}
+			} catch (error) {
+				console.warn("[Recording] Failed to stop audio track:", error);
+			}
+		}
+
+		// Only do state transitions and server signaling if we were actually recording
+		if (client && displayState === "recording") {
+			// Transition to processing state and start timeout
+			send({ type: "STOP_RECORDING" });
+			startResponseTimeout();
+
+			// Signal server to process the recorded audio
+			// This is required for server-side turn completion
+			// Use safe send to detect communication failures and trigger reconnection
+			safeSendClientMessage(client, "stop-recording", {}, (error) =>
+				send({ type: "COMMUNICATION_ERROR", error }),
+			);
+		}
+	}, [client, displayState, stopNativeCapture, send, startResponseTimeout]);
+
 	useEffect(() => {
+		let isCancelled = false;
 		let unlistenStart: (() => void) | undefined;
 		let unlistenStop: (() => void) | undefined;
 
 		const setup = async () => {
-			unlistenStart = await tauriAPI.onStartRecording(onStartRecording);
-			unlistenStop = await tauriAPI.onStopRecording(onStopRecording);
+			const [startUnlisten, stopUnlisten] = await Promise.all([
+				tauriAPI.onStartRecording(onStartRecording),
+				tauriAPI.onStopRecording(onStopRecording),
+			]);
+
+			// If cancelled before setup completed, clean up immediately
+			if (isCancelled) {
+				startUnlisten();
+				stopUnlisten();
+				return;
+			}
+
+			unlistenStart = startUnlisten;
+			unlistenStop = stopUnlisten;
 		};
 
 		setup();
 
 		return () => {
+			isCancelled = true;
 			unlistenStart?.();
 			unlistenStop?.();
 		};
@@ -343,7 +394,11 @@ function RecordingControl() {
 		const setup = async () => {
 			unlisten = await tauriAPI.onPrepareRecording(async () => {
 				// Only prepare if we're idle and not already prepared
-				if (!micPreparedRef.current && state === "idle" && isNativeAudioReady) {
+				if (
+					!micPreparedRef.current &&
+					displayState === "idle" &&
+					isNativeAudioReady
+				) {
 					const deviceId = settings?.selected_mic_id ?? undefined;
 					setIsMicAcquiring(true);
 					try {
@@ -365,7 +420,7 @@ function RecordingControl() {
 		};
 	}, [
 		settings?.selected_mic_id,
-		state,
+		displayState,
 		isNativeAudioReady,
 		startNativeCapture,
 	]);
@@ -376,11 +431,9 @@ function RecordingControl() {
 
 		const setup = async () => {
 			unlisten = await tauriAPI.onSettingsChanged(() => {
-				// Invalidate settings and serverUrl queries to trigger refetch from Tauri Store
+				// Invalidate settings query to trigger refetch from Tauri Store
 				// The settings sync useEffect will then detect the change and sync to server
-				// serverUrl must be invalidated separately since useServerUrl() uses its own query key
 				queryClient.invalidateQueries({ queryKey: ["settings"] });
-				queryClient.invalidateQueries({ queryKey: ["serverUrl"] });
 			});
 		};
 
@@ -390,32 +443,6 @@ function RecordingControl() {
 			unlisten?.();
 		};
 	}, [queryClient]);
-
-	// Listen for reconnect request from main window (triggered by user in settings)
-	useEffect(() => {
-		let unlisten: (() => void) | undefined;
-
-		const setup = async () => {
-			unlisten = await tauriAPI.onReconnect(() => {
-				console.log("[Pipecat] Received reconnect request from main window");
-				if (client) {
-					// Disconnect - the Disconnected event handler will auto-reconnect
-					client.disconnect().catch((error) => {
-						console.error(
-							"[Pipecat] Disconnect error during reconnect:",
-							error,
-						);
-					});
-				}
-			});
-		};
-
-		setup();
-
-		return () => {
-			unlisten?.();
-		};
-	}, [client]);
 
 	// Listen for disconnect request from Rust (triggered on app quit)
 	useEffect(() => {
@@ -507,95 +534,76 @@ function RecordingControl() {
 		[],
 	);
 
-	// Connection event handler
-	useRTVIClientEvent(
-		RTVIEvent.Connected,
-		useCallback(() => {
-			console.debug("[Pipecat] Connected");
-			hasConnectedRef.current = true;
-			handleConnected();
+	// Track if initial settings sync has been done for this connection
+	const hasInitialSyncRef = useRef(false);
 
-			// Sync settings to server via data channel (with delay to ensure connection is stable)
-			setTimeout(() => {
-				if (!client) return;
-
-				// Request available providers (for settings UI in main window)
-				client.sendClientMessage("get-available-providers", {});
-
-				// Send all current settings
-				const messages = buildConfigMessages(settings);
-				if (messages.length > 0) {
-					sendConfigMessages(client, messages as NonEmptyArray<ConfigMessage>);
-				}
-			}, 1000);
-		}, [client, settings, handleConnected, buildConfigMessages]),
-	);
-
-	// Sync settings when they change WHILE already connected
+	// Sync settings when they change OR on initial connection (state transitions to 'idle')
 	useEffect(() => {
 		const prevSettings = prevSettingsRef.current;
 		prevSettingsRef.current = settings;
 
-		// Only sync if connected AND settings actually changed
-		if (!client || state !== "idle") return;
+		// Only sync if connected (idle state)
+		if (!client || displayState !== "idle") {
+			// Reset initial sync flag when actually disconnected (not during recording/processing)
+			if (
+				displayState === "disconnected" ||
+				displayState === "connecting" ||
+				displayState === "reconnecting"
+			) {
+				hasInitialSyncRef.current = false;
+			}
+			return;
+		}
+
+		// Initial sync after connection - send all settings and request providers
+		// Now that we properly wait for "ready" state before transitioning to idle,
+		// we can send messages immediately without waiting
+		if (!hasInitialSyncRef.current) {
+			hasInitialSyncRef.current = true;
+
+			// Error handler for communication failures during sync
+			const handleCommunicationError = (error: string) =>
+				send({ type: "COMMUNICATION_ERROR", error });
+
+			// Request available providers (for settings UI in main window)
+			safeSendClientMessage(
+				client,
+				"get-available-providers",
+				{},
+				handleCommunicationError,
+			);
+
+			// Send all current settings
+			const messages = buildConfigMessages(settings);
+			if (messages.length > 0) {
+				sendConfigMessages(
+					client,
+					messages as NonEmptyArray<ConfigMessage>,
+					handleCommunicationError,
+				);
+			}
+			return;
+		}
+
+		// Runtime settings change - only send if settings actually changed
 		if (prevSettings === settings) return;
 
 		const messages = buildConfigMessages(settings, prevSettings);
 		if (messages.length > 0) {
-			sendConfigMessages(client, messages as NonEmptyArray<ConfigMessage>);
+			sendConfigMessages(
+				client,
+				messages as NonEmptyArray<ConfigMessage>,
+				(error) => send({ type: "COMMUNICATION_ERROR", error }),
+			);
 		}
-	}, [client, state, settings, buildConfigMessages]);
-
-	// Disconnection event handler
-	// Handles cleanup, state transition, and reconnection
-	useRTVIClientEvent(
-		RTVIEvent.Disconnected,
-		useCallback(() => {
-			console.debug("[Pipecat] Disconnected");
-
-			// Check if we were recording/processing when disconnect happened
-			const currentState = useRecordingStore.getState().state;
-			if (currentState === "recording" || currentState === "processing") {
-				console.warn("[Pipecat] Disconnected during recording/processing");
-				// Stop native audio capture
-				stopNativeCapture();
-				try {
-					client?.enableMic(false);
-					// Also stop the track to release the mic (removes OS mic indicator)
-					const tracks = client?.tracks();
-					if (tracks?.local?.audio) {
-						tracks.local.audio.stop();
-					}
-				} catch {
-					// Ignore errors when cleaning up mic
-				}
-			}
-
-			handleDisconnected();
-
-			// Reconnection: only if we've connected before (not on initial connection failure)
-			// SmallWebRTC already tried to reconnect (3 attempts) and gave up
-			if (hasConnectedRef.current && serverUrl && client) {
-				setTimeout(async () => {
-					try {
-						await client.disconnect(); // Reset client state
-						await client.connect({
-							webrtcRequestParams: { endpoint: `${serverUrl}/api/offer` },
-						});
-					} catch (error: unknown) {
-						console.error("[Pipecat] Reconnection failed:", error);
-					}
-				}, 3000);
-			}
-		}, [client, serverUrl, handleDisconnected, stopNativeCapture]),
-	);
+	}, [client, displayState, settings, buildConfigMessages, send]);
 
 	// LLM text streaming handlers (using official RTVI protocol via RTVIObserver)
 	useRTVIClientEvent(
 		RTVIEvent.BotLlmStarted,
 		useCallback(() => {
 			// Reset accumulator when LLM starts generating
-			llmTextAccumulatorRef.current = "";
+			streamedLlmResponseChunksRef.current = "";
 		}, []),
 	);
 
@@ -603,7 +611,7 @@ function RecordingControl() {
 		RTVIEvent.BotLlmText,
 		useCallback((data: BotLLMTextData) => {
 			// Accumulate text chunks from LLM
-			llmTextAccumulatorRef.current += data.text;
+			streamedLlmResponseChunksRef.current += data.text;
 		}, []),
 	);
 
@@ -611,8 +619,8 @@ function RecordingControl() {
 		RTVIEvent.BotLlmStopped,
 		useCallback(async () => {
 			clearResponseTimeout();
-			const text = llmTextAccumulatorRef.current.trim();
-			llmTextAccumulatorRef.current = "";
+			const text = streamedLlmResponseChunksRef.current.trim();
+			streamedLlmResponseChunksRef.current = "";
 
 			if (text) {
 				console.debug("[Pipecat] LLM response:", text);
@@ -623,13 +631,8 @@ function RecordingControl() {
 				}
 				addHistoryEntry.mutate(text);
 			}
-			handleResponse();
-		}, [
-			clearResponseTimeout,
-			typeTextMutation,
-			addHistoryEntry,
-			handleResponse,
-		]),
+			send({ type: "RESPONSE_RECEIVED" });
+		}, [clearResponseTimeout, typeTextMutation, addHistoryEntry, send]),
 	);
 
 	// Server message handler (for custom messages: config-updated, recording-complete, etc.)
@@ -637,57 +640,59 @@ function RecordingControl() {
 		RTVIEvent.ServerMessage,
 		useCallback(
 			(message: unknown) => {
-				const recordingCompleteResult =
-					RecordingCompleteMessageSchema.safeParse(message);
-				if (recordingCompleteResult.success) {
-					clearResponseTimeout();
-					handleResponse();
-					return;
-				}
+				const result = ServerMessageSchema.safeParse(message);
+				if (!result.success) return;
 
-				// Config response messages - relay to main window for notifications
-				const configUpdatedResult =
-					ConfigUpdatedMessageSchema.safeParse(message);
-				if (configUpdatedResult.success) {
-					tauriAPI.emitConfigResponse({
-						type: "config-updated",
-						setting: configUpdatedResult.data.setting,
-						value: configUpdatedResult.data.value,
-					});
-					return;
-				}
-
-				const configErrorResult = ConfigErrorMessageSchema.safeParse(message);
-				if (configErrorResult.success) {
-					tauriAPI.emitConfigResponse({
-						type: "config-error",
-						setting: configErrorResult.data.setting,
-						error: configErrorResult.data.error,
-					});
-					return;
-				}
-
-				// Available providers - relay to main window for settings UI
-				const availableProvidersResult =
-					AvailableProvidersMessageSchema.safeParse(message);
-				if (availableProvidersResult.success) {
-					tauriAPI.emitAvailableProviders({
-						stt: availableProvidersResult.data.stt,
-						llm: availableProvidersResult.data.llm,
-					});
-					return;
-				}
+				match(result.data)
+					.with({ type: "recording-complete" }, () => {
+						clearResponseTimeout();
+						send({ type: "RESPONSE_RECEIVED" });
+					})
+					.with({ type: "config-updated" }, ({ setting, value }) => {
+						tauriAPI.emitConfigResponse({
+							type: "config-updated",
+							setting,
+							value,
+						});
+					})
+					.with({ type: "config-error" }, ({ setting, error }) => {
+						tauriAPI.emitConfigResponse({
+							type: "config-error",
+							setting,
+							error,
+						});
+					})
+					.with({ type: "available-providers" }, ({ stt, llm }) => {
+						tauriAPI.emitAvailableProviders({ stt, llm });
+					})
+					.exhaustive();
 			},
-			[clearResponseTimeout, handleResponse],
+			[clearResponseTimeout, send],
 		),
 	);
 
-	// Error handlers
 	useRTVIClientEvent(
 		RTVIEvent.Error,
-		useCallback((error: unknown) => {
-			console.error("[Pipecat] Error:", error);
-		}, []),
+		useCallback(
+			(error: unknown) => {
+				console.error("[Pipecat] Error:", error);
+
+				// Check if this is a fatal error that requires reconnection
+				const errorData = error as {
+					data?: { message?: string; fatal?: boolean };
+				};
+				if (errorData?.data?.fatal) {
+					console.warn(
+						"[Pipecat] Fatal error detected, triggering reconnection",
+					);
+					send({
+						type: "COMMUNICATION_ERROR",
+						error: errorData.data.message ?? "Fatal error",
+					});
+				}
+			},
+			[send],
+		),
 	);
 
 	useRTVIClientEvent(
@@ -699,19 +704,19 @@ function RecordingControl() {
 
 	// Click handler (toggle mode)
 	const handleClick = useCallback(() => {
-		if (state === "recording") {
+		if (displayState === "recording") {
 			onStopRecording();
-		} else if (state === "idle") {
+		} else if (displayState === "idle") {
 			onStartRecording();
 		}
-	}, [state, onStartRecording, onStopRecording]);
+	}, [displayState, onStartRecording, onStopRecording]);
 
 	// Drag handler using @use-gesture/react
 	// Handles unfocused window dragging (data-tauri-drag-region doesn't work on unfocused windows)
 	const bindDrag = useDrag(
 		({ movement: [mx, my], first, last, memo }) => {
 			if (first) {
-				hasDragStartedRef.current = false;
+				hasWindowDragStartedRef.current = false;
 				return false; // memo = false (hasn't started dragging)
 			}
 
@@ -720,13 +725,13 @@ function RecordingControl() {
 
 			// Start dragging once threshold is exceeded
 			if (!memo && distance > DRAG_THRESHOLD) {
-				hasDragStartedRef.current = true;
+				hasWindowDragStartedRef.current = true;
 				tauriAPI.startDragging();
 				return true; // memo = true (dragging started)
 			}
 
 			if (last) {
-				hasDragStartedRef.current = false;
+				hasWindowDragStartedRef.current = false;
 			}
 
 			return memo;
@@ -748,20 +753,22 @@ function RecordingControl() {
 				padding: 2,
 				cursor: "grab",
 				userSelect: "none",
+				touchAction: "none",
 			}}
 		>
-			{state === "processing" ||
-			state === "disconnected" ||
-			state === "connecting" ||
+			{displayState === "processing" ||
+			displayState === "disconnected" ||
+			displayState === "connecting" ||
+			displayState === "reconnecting" ||
 			isMicAcquiring ? (
 				LoadingSpinner
 			) : (
 				<UserAudioComponent
 					onClick={handleClick}
-					isMicEnabled={state === "recording"}
+					isMicEnabled={displayState === "recording"}
 					noIcon={true}
 					noDevicePicker={true}
-					noVisualizer={state !== "recording"}
+					noVisualizer={displayState !== "recording"}
 					visualizerProps={{
 						barColor: "#eeeeee",
 						backgroundColor: "#000000",
@@ -770,63 +777,37 @@ function RecordingControl() {
 						button: "bg-black text-white hover:bg-gray-900",
 					}}
 				>
-					{state !== "recording" && <Logo className="size-5" />}
+					{displayState !== "recording" && <Logo className="size-5" />}
 				</UserAudioComponent>
 			)}
 		</div>
 	);
 }
 
-export default function OverlayApp() {
-	const [client, setClient] = useState<PipecatClient | null>(null);
-	const [devicesReady, setDevicesReady] = useState(false);
+/**
+ * Wrapper component that waits for the client to be available
+ * before rendering the recording control.
+ */
+function RecordingControlWithClient() {
+	const client = useConnectionClient();
 
-	// Initial client creation on mount
-	useEffect(() => {
-		const transport = new SmallWebRTCTransport({
-			iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-		});
-		const pipecatClient = new PipecatClient({
-			transport,
-			enableMic: false,
-			enableCam: false,
-		});
-		setClient(pipecatClient);
-
-		pipecatClient
-			.initDevices()
-			.then(() => {
-				// Stop the audio track to release the microphone
-				// initDevices() acquires the mic to enumerate devices, but we don't need it active until recording starts
-				try {
-					const tracks = pipecatClient.tracks();
-					if (tracks?.local?.audio) {
-						tracks.local.audio.stop();
-					}
-				} catch (error) {
-					console.warn("[Pipecat] Failed to stop initial audio track:", error);
-				}
-				setDevicesReady(true);
-			})
-			.catch((error: unknown) => {
-				console.error("[Pipecat] Failed to initialize devices:", error);
-				setDevicesReady(false);
-			});
-
-		return () => {
-			pipecatClient.disconnect().catch(() => {});
-		};
-	}, []);
-
-	if (!client || !devicesReady) {
+	if (!client) {
 		return InitialLoadingSpinner;
 	}
 
 	return (
-		<ThemeProvider>
-			<PipecatClientProvider client={client}>
-				<RecordingControl />
-			</PipecatClientProvider>
-		</ThemeProvider>
+		<PipecatClientProvider client={client}>
+			<RecordingControl />
+		</PipecatClientProvider>
+	);
+}
+
+export default function OverlayApp() {
+	return (
+		<ConnectionProvider>
+			<ThemeProvider>
+				<RecordingControlWithClient />
+			</ThemeProvider>
+		</ConnectionProvider>
 	);
 }
