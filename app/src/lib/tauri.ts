@@ -61,29 +61,49 @@ export type STTProviderId = (typeof STT_PROVIDER_IDS)[number] | (string & {});
 export type LLMProviderId = (typeof LLM_PROVIDER_IDS)[number] | (string & {});
 
 // =============================================================================
+// Provider Mode Constants
+// =============================================================================
+
+/** Discriminator values for provider selection modes */
+export const ProviderMode = {
+	/** Use server's configured default provider */
+	Auto: "auto",
+	/** Known provider from type-safe list */
+	Known: "known",
+	/** Unknown provider (forward compatibility) */
+	Other: "other",
+} as const;
+
+// =============================================================================
 // Provider Selection Discriminated Unions
 // =============================================================================
 
 /** Auto mode: use server's configured default provider */
-type AutoProviderSelection = { mode: "auto" };
+type AutoProviderSelection = { mode: typeof ProviderMode.Auto };
 
 /** Known STT provider from the type-safe list */
 type KnownSTTProviderSelection = {
-	mode: "known";
+	mode: typeof ProviderMode.Known;
 	providerId: KnownSTTProviderId;
 };
 
 /** Unknown STT provider (forward compatibility) */
-type OtherSTTProviderSelection = { mode: "other"; providerId: string };
+type OtherSTTProviderSelection = {
+	mode: typeof ProviderMode.Other;
+	providerId: string;
+};
 
 /** Known LLM provider from the type-safe list */
 type KnownLLMProviderSelection = {
-	mode: "known";
+	mode: typeof ProviderMode.Known;
 	providerId: KnownLLMProviderId;
 };
 
 /** Unknown LLM provider (forward compatibility) */
-type OtherLLMProviderSelection = { mode: "other"; providerId: string };
+type OtherLLMProviderSelection = {
+	mode: typeof ProviderMode.Other;
+	providerId: string;
+};
 
 /** Discriminated union for STT provider selection */
 export type STTProviderSelection =
@@ -98,18 +118,33 @@ export type LLMProviderSelection =
 	| OtherLLMProviderSelection;
 
 /**
+ * Internal helper for converting provider IDs to selection objects.
+ * Handles "auto", known providers, and unknown providers (forward compatibility).
+ */
+function toProviderSelectionInternal<KnownId extends string>(
+	id: string,
+	knownIds: readonly KnownId[],
+):
+	| { mode: typeof ProviderMode.Auto }
+	| { mode: typeof ProviderMode.Known; providerId: KnownId }
+	| { mode: typeof ProviderMode.Other; providerId: string } {
+	if (id === ProviderMode.Auto) {
+		return { mode: ProviderMode.Auto };
+	}
+	if ((knownIds as readonly string[]).includes(id)) {
+		return { mode: ProviderMode.Known, providerId: id as KnownId };
+	}
+	return { mode: ProviderMode.Other, providerId: id };
+}
+
+/**
  * Convert a stored STT provider ID to a selection object for RTVI messages.
  * Handles "auto", known providers, and unknown providers (forward compatibility).
  */
 export function toSTTProviderSelection(
 	id: STTProviderId,
 ): STTProviderSelection {
-	if (id === "auto") return { mode: "auto" };
-	// Check if it's a known provider
-	if ((STT_KNOWN_PROVIDER_IDS as readonly string[]).includes(id as string)) {
-		return { mode: "known", providerId: id as KnownSTTProviderId };
-	}
-	return { mode: "other", providerId: id };
+	return toProviderSelectionInternal(id, STT_KNOWN_PROVIDER_IDS);
 }
 
 /**
@@ -119,12 +154,7 @@ export function toSTTProviderSelection(
 export function toLLMProviderSelection(
 	id: LLMProviderId,
 ): LLMProviderSelection {
-	if (id === "auto") return { mode: "auto" };
-	// Check if it's a known provider
-	if ((LLM_KNOWN_PROVIDER_IDS as readonly string[]).includes(id as string)) {
-		return { mode: "known", providerId: id as KnownLLMProviderId };
-	}
-	return { mode: "other", providerId: id };
+	return toProviderSelectionInternal(id, LLM_KNOWN_PROVIDER_IDS);
 }
 
 // =============================================================================
@@ -136,9 +166,9 @@ export function toLLMProviderSelection(
  * This is what we EXPECT from the server for providers we recognize.
  */
 const STTProviderSelectionPrimarySchema = z.discriminatedUnion("mode", [
-	z.object({ mode: z.literal("auto") }),
+	z.object({ mode: z.literal(ProviderMode.Auto) }),
 	z.object({
-		mode: z.literal("known"),
+		mode: z.literal(ProviderMode.Known),
 		providerId: z.enum(STT_KNOWN_PROVIDER_IDS),
 	}),
 ]);
@@ -148,9 +178,9 @@ const STTProviderSelectionPrimarySchema = z.discriminatedUnion("mode", [
  * This is what we EXPECT from the server for providers we recognize.
  */
 const LLMProviderSelectionPrimarySchema = z.discriminatedUnion("mode", [
-	z.object({ mode: z.literal("auto") }),
+	z.object({ mode: z.literal(ProviderMode.Auto) }),
 	z.object({
-		mode: z.literal("known"),
+		mode: z.literal(ProviderMode.Known),
 		providerId: z.enum(LLM_KNOWN_PROVIDER_IDS),
 	}),
 ]);
@@ -162,7 +192,7 @@ const LLMProviderSelectionPrimarySchema = z.discriminatedUnion("mode", [
  * providers added in newer server versions.
  */
 const ProviderIdFallbackSchema = z.object({
-	mode: z.literal("known").or(z.literal("other")),
+	mode: z.literal(ProviderMode.Known).or(z.literal(ProviderMode.Other)),
 	providerId: z.string(),
 });
 
@@ -186,7 +216,10 @@ export function parseSTTProviderSelection(
 	// 2. Fallback: server sent unknown provider → put in "other"
 	const fallbackResult = ProviderIdFallbackSchema.safeParse(value);
 	if (fallbackResult.success) {
-		return { mode: "other", providerId: fallbackResult.data.providerId };
+		return {
+			mode: ProviderMode.Other,
+			providerId: fallbackResult.data.providerId,
+		};
 	}
 
 	// 3. Complete structural failure
@@ -214,7 +247,10 @@ export function parseLLMProviderSelection(
 	// 2. Fallback: server sent unknown provider → put in "other"
 	const fallbackResult = ProviderIdFallbackSchema.safeParse(value);
 	if (fallbackResult.success) {
-		return { mode: "other", providerId: fallbackResult.data.providerId };
+		return {
+			mode: ProviderMode.Other,
+			providerId: fallbackResult.data.providerId,
+		};
 	}
 
 	// 3. Complete structural failure
@@ -229,8 +265,8 @@ export function parseLLMProviderSelection(
 export function getProviderIdFromSelection(
 	selection: STTProviderSelection | LLMProviderSelection,
 ): string {
-	if (selection.mode === "auto") {
-		return "auto";
+	if (selection.mode === ProviderMode.Auto) {
+		return ProviderMode.Auto;
 	}
 	return selection.providerId;
 }

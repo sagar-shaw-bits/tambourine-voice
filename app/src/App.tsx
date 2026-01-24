@@ -56,11 +56,10 @@ function ConnectionStatusIndicator() {
 		state === "idle" || state === "recording" || state === "processing";
 	const isConnecting = state === "connecting";
 
-	const statusText = isConnecting
-		? "Connecting..."
-		: isConnected
-			? "Connected"
-			: "Disconnected";
+	const statusText = match(state)
+		.with("connecting", () => "Connecting...")
+		.with("idle", "recording", "processing", () => "Connected")
+		.otherwise(() => "Disconnected");
 
 	return (
 		<Tooltip label={statusText} position="right" withArrow>

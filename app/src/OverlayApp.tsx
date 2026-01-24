@@ -1,10 +1,6 @@
 import { Loader } from "@mantine/core";
 import { useResizeObserver, useTimeout } from "@mantine/hooks";
-import {
-	type BotLLMTextData,
-	type PipecatClient,
-	RTVIEvent,
-} from "@pipecat-ai/client-js";
+import { type BotLLMTextData, RTVIEvent } from "@pipecat-ai/client-js";
 import {
 	PipecatClientProvider,
 	usePipecatClient,
@@ -29,13 +25,12 @@ import {
 import { useNativeAudioTrack } from "./hooks/useNativeAudioTrack";
 import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
 import {
-	matchSendResult,
+	type ConfigMessage,
 	safeSendClientMessage,
+	sendConfigMessages,
 } from "./lib/safeSendClientMessage";
 import {
 	KNOWN_SETTINGS,
-	type LLMProviderSelection,
-	type STTProviderSelection,
 	tauriAPI,
 	toLLMProviderSelection,
 	toSTTProviderSelection,
@@ -115,41 +110,6 @@ const RTVIErrorSchema = z.object({
 		})
 		.optional(),
 });
-
-// Non-empty array type for type-safe batched sends
-type NonEmptyArray<T> = [T, ...T[]];
-
-// Discriminated union for type-safe config messages
-// Only provider switching uses RTVI (requires frame injection into pipeline)
-// Prompt sections and STT timeout now use HTTP API
-type ConfigMessage =
-	| { type: "set-stt-provider"; data: { provider: STTProviderSelection } }
-	| { type: "set-llm-provider"; data: { provider: LLMProviderSelection } };
-
-function sendConfigMessages(
-	client: PipecatClient,
-	messages: NonEmptyArray<ConfigMessage>,
-	onCommunicationError?: (error: string) => void,
-) {
-	for (const { type, data } of messages) {
-		const result = safeSendClientMessage(
-			client,
-			type,
-			data,
-			onCommunicationError,
-		);
-		// If a message fails to send, stop sending further messages
-		// The reconnection will handle re-syncing all settings
-		const shouldContinue = matchSendResult(result, {
-			onSuccess: () => true,
-			onNotReady: () => false,
-			onSendFailed: () => false,
-		});
-		if (!shouldContinue) {
-			break;
-		}
-	}
-}
 
 // Hoisted static JSX for loading states (avoids recreation on every render)
 const LoadingSpinner = (
@@ -675,11 +635,7 @@ function RecordingControl() {
 			// Send provider settings via RTVI (requires frame injection)
 			const messages = buildConfigMessages(settings);
 			if (messages.length > 0) {
-				sendConfigMessages(
-					client,
-					messages as NonEmptyArray<ConfigMessage>,
-					handleCommunicationError,
-				);
+				sendConfigMessages(client, messages, handleCommunicationError);
 			}
 		}
 
@@ -844,6 +800,16 @@ function RecordingControl() {
 		{ filterTaps: true },
 	);
 
+	// Determine view state for render
+	const isLoadingState =
+		displayState === "processing" ||
+		displayState === "disconnected" ||
+		displayState === "connecting" ||
+		displayState === "reconnecting" ||
+		isMicAcquiring;
+
+	const viewState = showError ? "error" : isLoadingState ? "loading" : "active";
+
 	return (
 		<div
 			ref={containerRef}
@@ -861,37 +827,35 @@ function RecordingControl() {
 				touchAction: "none",
 			}}
 		>
-			{showError ? (
-				<ErrorDisplay
-					onDismiss={() => setShowError(false)}
-					onStartRecording={
-						displayState === "idle" ? onStartRecording : undefined
-					}
-				/>
-			) : displayState === "processing" ||
-				displayState === "disconnected" ||
-				displayState === "connecting" ||
-				displayState === "reconnecting" ||
-				isMicAcquiring ? (
-				LoadingSpinner
-			) : (
-				<UserAudioComponent
-					onClick={handleClick}
-					isMicEnabled={displayState === "recording"}
-					noIcon={true}
-					noDevicePicker={true}
-					noVisualizer={displayState !== "recording"}
-					visualizerProps={{
-						barColor: "#eeeeee",
-						backgroundColor: "#000000",
-					}}
-					classNames={{
-						button: "bg-black text-white hover:bg-gray-900",
-					}}
-				>
-					{displayState !== "recording" && <Logo className="size-5" />}
-				</UserAudioComponent>
-			)}
+			{match(viewState)
+				.with("error", () => (
+					<ErrorDisplay
+						onDismiss={() => setShowError(false)}
+						onStartRecording={
+							displayState === "idle" ? onStartRecording : undefined
+						}
+					/>
+				))
+				.with("loading", () => LoadingSpinner)
+				.with("active", () => (
+					<UserAudioComponent
+						onClick={handleClick}
+						isMicEnabled={displayState === "recording"}
+						noIcon={true}
+						noDevicePicker={true}
+						noVisualizer={displayState !== "recording"}
+						visualizerProps={{
+							barColor: "#eeeeee",
+							backgroundColor: "#000000",
+						}}
+						classNames={{
+							button: "bg-black text-white hover:bg-gray-900",
+						}}
+					>
+						{displayState !== "recording" && <Logo className="size-5" />}
+					</UserAudioComponent>
+				))
+				.exhaustive()}
 		</div>
 	);
 }

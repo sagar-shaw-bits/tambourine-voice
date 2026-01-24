@@ -1,4 +1,4 @@
-use crate::settings::{check_hotkey_conflict, AppSettings, HotkeyConfig, HotkeyType};
+use crate::settings::{check_hotkey_conflict, AppSettings, HotkeyConfig, HotkeyType, StoreKey};
 
 // Tests for HotkeyConfig::to_shortcut_string()
 #[test]
@@ -199,9 +199,9 @@ fn test_app_settings_default() {
 // Tests for HotkeyType
 #[test]
 fn test_hotkey_type_store_key() {
-    assert_eq!(HotkeyType::Toggle.store_key(), "toggle_hotkey");
-    assert_eq!(HotkeyType::Hold.store_key(), "hold_hotkey");
-    assert_eq!(HotkeyType::PasteLast.store_key(), "paste_last_hotkey");
+    assert_eq!(HotkeyType::Toggle.store_key(), StoreKey::ToggleHotkey);
+    assert_eq!(HotkeyType::Hold.store_key(), StoreKey::HoldHotkey);
+    assert_eq!(HotkeyType::PasteLast.store_key(), StoreKey::PasteLastHotkey);
 }
 
 #[test]

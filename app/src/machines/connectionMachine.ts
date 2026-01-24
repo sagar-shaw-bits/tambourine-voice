@@ -11,14 +11,12 @@ import {
 } from "xstate";
 import type { ProviderChangeRequestPayload } from "../lib/events";
 import {
-	matchSendResult,
-	safeSendClientMessage,
+	type ConfigMessage,
+	sendConfigMessages,
 } from "../lib/safeSendClientMessage";
 import {
 	type ConnectionState,
 	configAPI,
-	type LLMProviderSelection,
-	type STTProviderSelection,
 	tauriAPI,
 	toLLMProviderSelection,
 	toSTTProviderSelection,
@@ -284,40 +282,6 @@ const disconnectListenerActor = fromCallback<
 // =============================================================================
 // Provider Change Listener Actor
 // =============================================================================
-
-// Discriminated union for type-safe config messages (provider switching via RTVI)
-type ConfigMessage =
-	| { type: "set-stt-provider"; data: { provider: STTProviderSelection } }
-	| { type: "set-llm-provider"; data: { provider: LLMProviderSelection } };
-
-/**
- * Send config messages to the server via RTVI.
- * Stops on first failure to allow reconnection to handle re-syncing.
- */
-function sendConfigMessages(
-	client: PipecatClient,
-	messages: ConfigMessage[],
-	onCommunicationError?: (error: string) => void,
-): void {
-	for (const { type, data } of messages) {
-		const result = safeSendClientMessage(
-			client,
-			type,
-			data,
-			onCommunicationError,
-		);
-		// If a message fails to send, stop sending further messages
-		// The reconnection will handle re-syncing all settings
-		const shouldContinue = matchSendResult(result, {
-			onSuccess: () => true,
-			onNotReady: () => false,
-			onSendFailed: () => false,
-		});
-		if (!shouldContinue) {
-			break;
-		}
-	}
-}
 
 /**
  * Maps provider type to the corresponding setting name for error reporting.

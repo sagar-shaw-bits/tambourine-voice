@@ -8,8 +8,53 @@ import {
 	useUpdateSTTProviderWithServer,
 	useUpdateSTTTimeout,
 } from "../../lib/queries";
+import type { ProviderInfo } from "../../lib/tauri";
 
 const DEFAULT_STT_TIMEOUT = 0.8;
+
+/** Select option format for Mantine Select */
+interface SelectOption {
+	value: string;
+	label: string;
+}
+
+/** Grouped select options format for Mantine Select */
+interface GroupedSelectOptions {
+	group: string;
+	items: SelectOption[];
+}
+
+/**
+ * Group providers by cloud/local for dropdown display.
+ * Returns grouped options with "Auto" at the top, followed by "Cloud" and "Local" groups.
+ */
+function groupProvidersByType(
+	providers: ProviderInfo[] | undefined,
+): GroupedSelectOptions[] {
+	if (!providers) {
+		return [{ group: "", items: [{ value: "auto", label: "Auto" }] }];
+	}
+
+	const toSelectOption = (provider: ProviderInfo): SelectOption => ({
+		value: provider.value,
+		label: provider.model
+			? `${provider.label} (${provider.model})`
+			: provider.label,
+	});
+
+	const cloudProviders = providers
+		.filter((p) => !p.is_local)
+		.map(toSelectOption);
+	const localProviders = providers
+		.filter((p) => p.is_local)
+		.map(toSelectOption);
+
+	return [
+		{ group: "", items: [{ value: "auto", label: "Auto" }] },
+		{ group: "Cloud", items: cloudProviders },
+		{ group: "Local", items: localProviders },
+	];
+}
 
 // React Query mutation status type
 type MutationStatus = "idle" | "pending" | "success" | "error";
@@ -80,62 +125,13 @@ export function ProvidersSettings() {
 	}, [currentTimeout]);
 
 	// Group providers by cloud/local for dropdown display (memoized to prevent unnecessary re-renders)
-	const sttCloudProviders = useMemo(
-		() =>
-			availableProviders?.stt
-				.filter((p) => !p.is_local)
-				.map((p) => ({
-					value: p.value,
-					label: p.model ? `${p.label} (${p.model})` : p.label,
-				})) ?? [],
-		[availableProviders],
-	);
-	const sttLocalProviders = useMemo(
-		() =>
-			availableProviders?.stt
-				.filter((p) => p.is_local)
-				.map((p) => ({
-					value: p.value,
-					label: p.model ? `${p.label} (${p.model})` : p.label,
-				})) ?? [],
-		[availableProviders],
-	);
 	const sttProviderOptions = useMemo(
-		() => [
-			{ group: "", items: [{ value: "auto", label: "Auto" }] },
-			{ group: "Cloud", items: sttCloudProviders },
-			{ group: "Local", items: sttLocalProviders },
-		],
-		[sttCloudProviders, sttLocalProviders],
-	);
-
-	const llmCloudProviders = useMemo(
-		() =>
-			availableProviders?.llm
-				.filter((p) => !p.is_local)
-				.map((p) => ({
-					value: p.value,
-					label: p.model ? `${p.label} (${p.model})` : p.label,
-				})) ?? [],
-		[availableProviders],
-	);
-	const llmLocalProviders = useMemo(
-		() =>
-			availableProviders?.llm
-				.filter((p) => p.is_local)
-				.map((p) => ({
-					value: p.value,
-					label: p.model ? `${p.label} (${p.model})` : p.label,
-				})) ?? [],
+		() => groupProvidersByType(availableProviders?.stt),
 		[availableProviders],
 	);
 	const llmProviderOptions = useMemo(
-		() => [
-			{ group: "", items: [{ value: "auto", label: "Auto" }] },
-			{ group: "Cloud", items: llmCloudProviders },
-			{ group: "Local", items: llmLocalProviders },
-		],
-		[llmCloudProviders, llmLocalProviders],
+		() => groupProvidersByType(availableProviders?.llm),
+		[availableProviders],
 	);
 
 	// Get display value for dropdown:
@@ -183,9 +179,7 @@ export function ProvidersSettings() {
 									onChange={handleSTTProviderChange}
 									placeholder="Select provider"
 									disabled={
-										sttMutation.isPending ||
-										(sttCloudProviders.length === 0 &&
-											sttLocalProviders.length === 0)
+										sttMutation.isPending || !availableProviders?.stt.length
 									}
 									rightSection={
 										!isSttProviderAuto && settings?.stt_provider ? (
@@ -222,9 +216,7 @@ export function ProvidersSettings() {
 									onChange={handleLLMProviderChange}
 									placeholder="Select provider"
 									disabled={
-										llmMutation.isPending ||
-										(llmCloudProviders.length === 0 &&
-											llmLocalProviders.length === 0)
+										llmMutation.isPending || !availableProviders?.llm.length
 									}
 									rightSection={
 										!isLlmProviderAuto && settings?.llm_provider ? (

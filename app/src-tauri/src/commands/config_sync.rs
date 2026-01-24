@@ -1,5 +1,5 @@
 use crate::config_sync::ConfigSync;
-use crate::events::{config_settings, names, ConfigResponse};
+use crate::events::{ConfigResponse, ConfigSetting, EventName};
 use tauri::{AppHandle, Emitter};
 
 /// Notify Rust that we've connected to the server
@@ -25,15 +25,15 @@ pub async fn set_server_connected(
         match sync.sync_prompt_sections(sections).await {
             Ok(()) => {
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::updated(config_settings::PROMPT_SECTIONS, sections),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::updated(ConfigSetting::PromptSections, sections),
                 );
             }
             Err(e) => {
                 log::warn!("Failed to sync prompt sections on connect: {}", e);
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::<()>::error(config_settings::PROMPT_SECTIONS, e),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::<()>::error(ConfigSetting::PromptSections, e),
                 );
             }
         }
@@ -43,15 +43,15 @@ pub async fn set_server_connected(
         match sync.sync_stt_timeout(timeout).await {
             Ok(()) => {
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::updated(config_settings::STT_TIMEOUT, timeout),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::updated(ConfigSetting::SttTimeout, timeout),
                 );
             }
             Err(e) => {
                 log::warn!("Failed to sync STT timeout on connect: {}", e);
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::<()>::error(config_settings::STT_TIMEOUT, e),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::<()>::error(ConfigSetting::SttTimeout, e),
                 );
             }
         }

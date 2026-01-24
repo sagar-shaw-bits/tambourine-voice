@@ -28,6 +28,56 @@ pub const DEFAULT_HOLD_KEY: &str = "Backquote";
 pub const DEFAULT_PASTE_LAST_KEY: &str = "Period";
 
 // ============================================================================
+// STORE KEY ENUM - Type-safe access to settings.json keys
+// ============================================================================
+
+/// Store keys for settings.json - provides type-safe access to settings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreKey {
+    /// Toggle hotkey configuration
+    ToggleHotkey,
+    /// Hold hotkey configuration
+    HoldHotkey,
+    /// Paste-last hotkey configuration
+    PasteLastHotkey,
+    /// Selected microphone ID
+    SelectedMicId,
+    /// Sound enabled setting
+    SoundEnabled,
+    /// Cleanup prompt sections
+    CleanupPromptSections,
+    /// STT provider selection
+    SttProvider,
+    /// LLM provider selection
+    LlmProvider,
+    /// Auto-mute audio setting
+    AutoMuteAudio,
+    /// STT timeout in seconds
+    SttTimeoutSeconds,
+    /// Server URL
+    ServerUrl,
+}
+
+impl StoreKey {
+    /// Returns the string key used in settings.json
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ToggleHotkey => "toggle_hotkey",
+            Self::HoldHotkey => "hold_hotkey",
+            Self::PasteLastHotkey => "paste_last_hotkey",
+            Self::SelectedMicId => "selected_mic_id",
+            Self::SoundEnabled => "sound_enabled",
+            Self::CleanupPromptSections => "cleanup_prompt_sections",
+            Self::SttProvider => "stt_provider",
+            Self::LlmProvider => "llm_provider",
+            Self::AutoMuteAudio => "auto_mute_audio",
+            Self::SttTimeoutSeconds => "stt_timeout_seconds",
+            Self::ServerUrl => "server_url",
+        }
+    }
+}
+
+// ============================================================================
 
 /// Configuration for a hotkey combination
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,52 +98,36 @@ fn default_enabled() -> bool {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        Self {
-            modifiers: DEFAULT_HOTKEY_MODIFIERS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            key: DEFAULT_TOGGLE_KEY.to_string(),
-            enabled: true,
-        }
+        Self::default_with_key(DEFAULT_TOGGLE_KEY)
     }
 }
 
 impl HotkeyConfig {
-    /// Create default toggle hotkey config
-    pub fn default_toggle() -> Self {
+    /// Internal helper to create a default hotkey config with a specific key
+    fn default_with_key(key: &str) -> Self {
         Self {
             modifiers: DEFAULT_HOTKEY_MODIFIERS
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            key: DEFAULT_TOGGLE_KEY.to_string(),
+            key: key.to_string(),
             enabled: true,
         }
+    }
+
+    /// Create default toggle hotkey config
+    pub fn default_toggle() -> Self {
+        Self::default_with_key(DEFAULT_TOGGLE_KEY)
     }
 
     /// Create default hold hotkey config
     pub fn default_hold() -> Self {
-        Self {
-            modifiers: DEFAULT_HOTKEY_MODIFIERS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            key: DEFAULT_HOLD_KEY.to_string(),
-            enabled: true,
-        }
+        Self::default_with_key(DEFAULT_HOLD_KEY)
     }
 
     /// Create default paste-last hotkey config
     pub fn default_paste_last() -> Self {
-        Self {
-            modifiers: DEFAULT_HOTKEY_MODIFIERS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            key: DEFAULT_PASTE_LAST_KEY.to_string(),
-            enabled: true,
-        }
+        Self::default_with_key(DEFAULT_PASTE_LAST_KEY)
     }
 
     /// Convert to shortcut string format like "ctrl+alt+Space"
@@ -216,11 +250,11 @@ pub enum HotkeyType {
 }
 
 impl HotkeyType {
-    pub fn store_key(&self) -> &'static str {
+    pub fn store_key(&self) -> StoreKey {
         match self {
-            HotkeyType::Toggle => "toggle_hotkey",
-            HotkeyType::Hold => "hold_hotkey",
-            HotkeyType::PasteLast => "paste_last_hotkey",
+            HotkeyType::Toggle => StoreKey::ToggleHotkey,
+            HotkeyType::Hold => StoreKey::HoldHotkey,
+            HotkeyType::PasteLast => StoreKey::PasteLastHotkey,
         }
     }
 

@@ -1,6 +1,6 @@
 use crate::settings::{
     check_hotkey_conflict, AppSettings, CleanupPromptSections, HotkeyConfig, HotkeyType,
-    SettingsError, DEFAULT_SERVER_URL,
+    SettingsError, StoreKey, DEFAULT_SERVER_URL,
 };
 use crate::state::{AppState, ShortcutErrors, ShortcutRegistrationResult};
 use tauri::{AppHandle, Manager};
@@ -33,14 +33,14 @@ pub async fn unregister_shortcuts(_app: AppHandle) -> Result<(), String> {
 
 /// Helper to read a setting from the store with a default fallback
 #[cfg(desktop)]
-fn get_setting_from_store<T: serde::de::DeserializeOwned>(
+pub(crate) fn get_setting_from_store<T: serde::de::DeserializeOwned>(
     app: &AppHandle,
-    key: &str,
+    key: StoreKey,
     default: T,
 ) -> T {
     app.store("settings.json")
         .ok()
-        .and_then(|store| store.get(key))
+        .and_then(|store| store.get(key.as_str()))
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or(default)
 }
@@ -82,9 +82,12 @@ pub async fn set_hotkey_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     let (store_key, default_hotkey) = match hotkey_type.as_str() {
-        "toggle" => ("toggle_hotkey", HotkeyConfig::default_toggle()),
-        "hold" => ("hold_hotkey", HotkeyConfig::default_hold()),
-        "paste_last" => ("paste_last_hotkey", HotkeyConfig::default_paste_last()),
+        "toggle" => (StoreKey::ToggleHotkey, HotkeyConfig::default_toggle()),
+        "hold" => (StoreKey::HoldHotkey, HotkeyConfig::default_hold()),
+        "paste_last" => (
+            StoreKey::PasteLastHotkey,
+            HotkeyConfig::default_paste_last(),
+        ),
         _ => return Err(format!("Unknown hotkey type: {}", hotkey_type)),
     };
 
@@ -119,23 +122,35 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
     Ok(AppSettings {
         toggle_hotkey: get_setting_from_store(
             &app,
-            "toggle_hotkey",
+            StoreKey::ToggleHotkey,
             HotkeyConfig::default_toggle(),
         ),
-        hold_hotkey: get_setting_from_store(&app, "hold_hotkey", HotkeyConfig::default_hold()),
+        hold_hotkey: get_setting_from_store(
+            &app,
+            StoreKey::HoldHotkey,
+            HotkeyConfig::default_hold(),
+        ),
         paste_last_hotkey: get_setting_from_store(
             &app,
-            "paste_last_hotkey",
+            StoreKey::PasteLastHotkey,
             HotkeyConfig::default_paste_last(),
         ),
-        selected_mic_id: get_setting_from_store(&app, "selected_mic_id", None),
-        sound_enabled: get_setting_from_store(&app, "sound_enabled", true),
-        cleanup_prompt_sections: get_setting_from_store(&app, "cleanup_prompt_sections", None),
-        stt_provider: get_setting_from_store(&app, "stt_provider", "auto".to_string()),
-        llm_provider: get_setting_from_store(&app, "llm_provider", "auto".to_string()),
-        auto_mute_audio: get_setting_from_store(&app, "auto_mute_audio", false),
-        stt_timeout_seconds: get_setting_from_store(&app, "stt_timeout_seconds", None),
-        server_url: get_setting_from_store(&app, "server_url", DEFAULT_SERVER_URL.to_string()),
+        selected_mic_id: get_setting_from_store(&app, StoreKey::SelectedMicId, None),
+        sound_enabled: get_setting_from_store(&app, StoreKey::SoundEnabled, true),
+        cleanup_prompt_sections: get_setting_from_store(
+            &app,
+            StoreKey::CleanupPromptSections,
+            None,
+        ),
+        stt_provider: get_setting_from_store(&app, StoreKey::SttProvider, "auto".to_string()),
+        llm_provider: get_setting_from_store(&app, StoreKey::LlmProvider, "auto".to_string()),
+        auto_mute_audio: get_setting_from_store(&app, StoreKey::AutoMuteAudio, false),
+        stt_timeout_seconds: get_setting_from_store(&app, StoreKey::SttTimeoutSeconds, None),
+        server_url: get_setting_from_store(
+            &app,
+            StoreKey::ServerUrl,
+            DEFAULT_SERVER_URL.to_string(),
+        ),
     })
 }
 
@@ -190,7 +205,7 @@ pub async fn update_hotkey(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_selected_mic(app: AppHandle, mic_id: Option<String>) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "selected_mic_id", &mic_id)?;
+    crate::save_setting_to_store(&app, StoreKey::SelectedMicId, &mic_id)?;
     log::info!("Updated selected microphone: {:?}", mic_id);
     Ok(())
 }
@@ -205,7 +220,7 @@ pub async fn update_selected_mic(_app: AppHandle, _mic_id: Option<String>) -> Re
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_sound_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "sound_enabled", &enabled)?;
+    crate::save_setting_to_store(&app, StoreKey::SoundEnabled, &enabled)?;
     log::info!("Updated sound enabled: {}", enabled);
     Ok(())
 }
@@ -224,11 +239,11 @@ pub async fn update_cleanup_prompt_sections(
     sections: Option<CleanupPromptSections>,
     config_sync: tauri::State<'_, crate::config_sync::ConfigSync>,
 ) -> Result<(), String> {
-    use crate::events::{config_settings, names, ConfigResponse};
+    use crate::events::{ConfigResponse, ConfigSetting, EventName};
     use tauri::Emitter;
 
     // Save locally
-    crate::save_setting_to_store(&app, "cleanup_prompt_sections", &sections)?;
+    crate::save_setting_to_store(&app, StoreKey::CleanupPromptSections, &sections)?;
     log::info!("Updated cleanup prompt sections");
 
     // Sync to server and emit notification
@@ -236,15 +251,15 @@ pub async fn update_cleanup_prompt_sections(
         match config_sync.read().await.sync_prompt_sections(s).await {
             Ok(()) => {
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::updated(config_settings::PROMPT_SECTIONS, s),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::updated(ConfigSetting::PromptSections, s),
                 );
             }
             Err(e) => {
                 log::warn!("Failed to sync prompt sections to server: {}", e);
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::<()>::error(config_settings::PROMPT_SECTIONS, e),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::<()>::error(ConfigSetting::PromptSections, e),
                 );
             }
         }
@@ -266,7 +281,7 @@ pub async fn update_cleanup_prompt_sections(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_stt_provider(app: AppHandle, provider: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "stt_provider", &provider)?;
+    crate::save_setting_to_store(&app, StoreKey::SttProvider, &provider)?;
     log::info!("Updated STT provider: {}", provider);
     Ok(())
 }
@@ -281,7 +296,7 @@ pub async fn update_stt_provider(_app: AppHandle, _provider: String) -> Result<(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_llm_provider(app: AppHandle, provider: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "llm_provider", &provider)?;
+    crate::save_setting_to_store(&app, StoreKey::LlmProvider, &provider)?;
     log::info!("Updated LLM provider: {}", provider);
     Ok(())
 }
@@ -296,7 +311,7 @@ pub async fn update_llm_provider(_app: AppHandle, _provider: String) -> Result<(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_auto_mute_audio(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "auto_mute_audio", &enabled)?;
+    crate::save_setting_to_store(&app, StoreKey::AutoMuteAudio, &enabled)?;
     log::info!("Updated auto mute audio: {}", enabled);
     Ok(())
 }
@@ -315,11 +330,11 @@ pub async fn update_stt_timeout(
     timeout_seconds: Option<f64>,
     config_sync: tauri::State<'_, crate::config_sync::ConfigSync>,
 ) -> Result<(), String> {
-    use crate::events::{config_settings, names, ConfigResponse};
+    use crate::events::{ConfigResponse, ConfigSetting, EventName};
     use tauri::Emitter;
 
     // Save locally
-    crate::save_setting_to_store(&app, "stt_timeout_seconds", &timeout_seconds)?;
+    crate::save_setting_to_store(&app, StoreKey::SttTimeoutSeconds, &timeout_seconds)?;
     log::info!("Updated STT timeout: {:?}", timeout_seconds);
 
     // Sync to server and emit notification
@@ -327,15 +342,15 @@ pub async fn update_stt_timeout(
         match config_sync.read().await.sync_stt_timeout(timeout).await {
             Ok(()) => {
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::updated(config_settings::STT_TIMEOUT, timeout),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::updated(ConfigSetting::SttTimeout, timeout),
                 );
             }
             Err(e) => {
                 log::warn!("Failed to sync STT timeout to server: {}", e);
                 let _ = app.emit(
-                    names::CONFIG_RESPONSE,
-                    ConfigResponse::<()>::error(config_settings::STT_TIMEOUT, e),
+                    EventName::ConfigResponse.as_str(),
+                    ConfigResponse::<()>::error(ConfigSetting::SttTimeout, e),
                 );
             }
         }
@@ -357,7 +372,7 @@ pub async fn update_stt_timeout(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_server_url(app: AppHandle, url: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "server_url", &url)?;
+    crate::save_setting_to_store(&app, StoreKey::ServerUrl, &url)?;
     log::info!("Updated server URL: {}", url);
     Ok(())
 }
@@ -372,11 +387,15 @@ pub async fn update_server_url(_app: AppHandle, _url: String) -> Result<(), Stri
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn reset_hotkeys_to_defaults(app: AppHandle) -> Result<(), String> {
-    crate::save_setting_to_store(&app, "toggle_hotkey", &HotkeyConfig::default_toggle())?;
-    crate::save_setting_to_store(&app, "hold_hotkey", &HotkeyConfig::default_hold())?;
     crate::save_setting_to_store(
         &app,
-        "paste_last_hotkey",
+        StoreKey::ToggleHotkey,
+        &HotkeyConfig::default_toggle(),
+    )?;
+    crate::save_setting_to_store(&app, StoreKey::HoldHotkey, &HotkeyConfig::default_hold())?;
+    crate::save_setting_to_store(
+        &app,
+        StoreKey::PasteLastHotkey,
         &HotkeyConfig::default_paste_last(),
     )?;
     log::info!("Reset all hotkeys to defaults");

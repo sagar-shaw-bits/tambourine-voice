@@ -1,6 +1,14 @@
 import type { PipecatClient } from "@pipecat-ai/client-js";
 import type { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { match } from "ts-pattern";
+import type { LLMProviderSelection, STTProviderSelection } from "./tauri";
+
+// Discriminated union for type-safe config messages
+// Only provider switching uses RTVI (requires frame injection into pipeline)
+// Prompt sections and STT timeout now use HTTP API
+export type ConfigMessage =
+	| { type: "set-stt-provider"; data: { provider: STTProviderSelection } }
+	| { type: "set-llm-provider"; data: { provider: LLMProviderSelection } };
 
 export type SendResultSuccess = { success: true };
 export type SendResultNotReady = {
@@ -84,5 +92,34 @@ export function safeSendClientMessage(
 		console.warn(`[safeSend] Send failed: ${error}`);
 		onCommunicationError?.(error);
 		return { success: false, reason: "send_failed", error };
+	}
+}
+
+/**
+ * Send config messages to the server via RTVI.
+ * Stops on first failure to allow reconnection to handle re-syncing.
+ */
+export function sendConfigMessages(
+	client: PipecatClient,
+	messages: ConfigMessage[],
+	onCommunicationError?: (error: string) => void,
+): void {
+	for (const { type, data } of messages) {
+		const result = safeSendClientMessage(
+			client,
+			type,
+			data,
+			onCommunicationError,
+		);
+		// If a message fails to send, stop sending further messages
+		// The reconnection will handle re-syncing all settings
+		const shouldContinue = matchSendResult(result, {
+			onSuccess: () => true,
+			onNotReady: () => false,
+			onSendFailed: () => false,
+		});
+		if (!shouldContinue) {
+			break;
+		}
 	}
 }

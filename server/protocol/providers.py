@@ -105,14 +105,19 @@ LLMProviderSelection = Annotated[
 ]
 
 
-def parse_stt_provider_selection(provider_value: str | None) -> STTProviderSelection | None:
-    """Parse a provider string into an STTProviderSelection.
+def _parse_provider_selection[
+    ProviderIdEnum: StrEnum,
+    KnownProvider: BaseModel,
+    OtherProvider: BaseModel,
+](
+    provider_value: str | None,
+    provider_enum: type[ProviderIdEnum],
+    known_provider_class: type[KnownProvider],
+    other_provider_class: type[OtherProvider],
+) -> AutoProvider | KnownProvider | OtherProvider | None:
+    """Internal helper for parsing provider strings into selection objects.
 
-    Args:
-        provider_value: The provider ID string (e.g., "deepgram", "openai", "auto")
-
-    Returns:
-        The parsed STTProviderSelection, or None if provider_value is None/empty
+    Handles "auto", known providers, and unknown providers (forward compatibility).
     """
     if not provider_value:
         return None
@@ -122,11 +127,25 @@ def parse_stt_provider_selection(provider_value: str | None) -> STTProviderSelec
 
     # Try to parse as known provider
     try:
-        provider_id = STTProviderId(provider_value)
-        return KnownSTTProvider(mode="known", provider_id=provider_id)
+        provider_id = provider_enum(provider_value)
+        return known_provider_class(mode="known", provider_id=provider_id)
     except ValueError:
         # Unknown provider - forward compatibility
-        return OtherSTTProvider(mode="other", provider_id=provider_value)
+        return other_provider_class(mode="other", provider_id=provider_value)
+
+
+def parse_stt_provider_selection(provider_value: str | None) -> STTProviderSelection | None:
+    """Parse a provider string into an STTProviderSelection.
+
+    Args:
+        provider_value: The provider ID string (e.g., "deepgram", "openai", "auto")
+
+    Returns:
+        The parsed STTProviderSelection, or None if provider_value is None/empty
+    """
+    return _parse_provider_selection(
+        provider_value, STTProviderId, KnownSTTProvider, OtherSTTProvider
+    )
 
 
 def parse_llm_provider_selection(provider_value: str | None) -> LLMProviderSelection | None:
@@ -138,16 +157,6 @@ def parse_llm_provider_selection(provider_value: str | None) -> LLMProviderSelec
     Returns:
         The parsed LLMProviderSelection, or None if provider_value is None/empty
     """
-    if not provider_value:
-        return None
-
-    if provider_value == "auto":
-        return AutoProvider(mode="auto")
-
-    # Try to parse as known provider
-    try:
-        provider_id = LLMProviderId(provider_value)
-        return KnownLLMProvider(mode="known", provider_id=provider_id)
-    except ValueError:
-        # Unknown provider - forward compatibility
-        return OtherLLMProvider(mode="other", provider_id=provider_value)
+    return _parse_provider_selection(
+        provider_value, LLMProviderId, KnownLLMProvider, OtherLLMProvider
+    )

@@ -12,44 +12,79 @@ use serde::Serialize;
 // Event Names - Must match src/lib/events.ts
 // =============================================================================
 
-pub mod names {
-    // Rust → All: Hotkey triggers
-    pub const RECORDING_START: &str = "recording-start";
-    pub const RECORDING_STOP: &str = "recording-stop";
-    pub const PREPARE_RECORDING: &str = "prepare-recording";
+/// Type-safe event names for Tauri event emission.
+/// Use `EventName::*.as_str()` when calling `app.emit()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventName {
+    /// Rust → All: Recording started
+    RecordingStart,
+    /// Rust → All: Recording stopped
+    RecordingStop,
+    /// Rust → All: Prepare for recording (mic warmup)
+    PrepareRecording,
+    /// Rust → All: Config sync response
+    ConfigResponse,
+    /// Rust → Overlay: Disconnect request on app quit
+    RequestDisconnect,
+    /// Main → Overlay: Settings changed, refetch needed
+    SettingsChanged,
+    /// Main → Overlay: Request reconnection
+    ReconnectRequest,
+    /// Overlay → Main: Connection state updates
+    ConnectionState,
+    /// Overlay → Main: Reconnection started
+    ReconnectStarted,
+    /// Overlay → Main: Reconnection result
+    ReconnectResult,
+    /// Rust → All: History changed
+    HistoryChanged,
+    /// Rust → Overlay: Native audio data from mic capture
+    NativeAudioData,
+}
 
-    // Rust → All: Config sync notifications
-    pub const CONFIG_RESPONSE: &str = "config-response";
-
-    // Rust → Overlay: Disconnect request on app quit
-    pub const REQUEST_DISCONNECT: &str = "request-disconnect";
-
-    // Main → Overlay: Settings changed, refetch needed
-    pub const SETTINGS_CHANGED: &str = "settings-changed";
-
-    // Main → Overlay: Request reconnection
-    pub const RECONNECT_REQUEST: &str = "request-reconnect";
-
-    // Overlay → Main: Connection state updates
-    pub const CONNECTION_STATE: &str = "connection-state-changed";
-
-    // Overlay → Main: Reconnection progress
-    pub const RECONNECT_STARTED: &str = "reconnect-started";
-    pub const RECONNECT_RESULT: &str = "reconnect-result";
-
-    // Rust → All: History changed
-    pub const HISTORY_CHANGED: &str = "history-changed";
+impl EventName {
+    /// Returns the string representation for Tauri event emission.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RecordingStart => "recording-start",
+            Self::RecordingStop => "recording-stop",
+            Self::PrepareRecording => "prepare-recording",
+            Self::ConfigResponse => "config-response",
+            Self::RequestDisconnect => "request-disconnect",
+            Self::SettingsChanged => "settings-changed",
+            Self::ReconnectRequest => "request-reconnect",
+            Self::ConnectionState => "connection-state-changed",
+            Self::ReconnectStarted => "reconnect-started",
+            Self::ReconnectResult => "reconnect-result",
+            Self::HistoryChanged => "history-changed",
+            Self::NativeAudioData => "native-audio-data",
+        }
+    }
 }
 
 // =============================================================================
 // Config Setting Names - Must match src/lib/events.ts
 // =============================================================================
 
-pub mod config_settings {
-    pub const PROMPT_SECTIONS: &str = "prompt-sections";
-    pub const STT_TIMEOUT: &str = "stt-timeout";
-    pub const STT_PROVIDER: &str = "stt-provider";
-    pub const LLM_PROVIDER: &str = "llm-provider";
+/// Type-safe config setting names for config sync responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSetting {
+    PromptSections,
+    SttTimeout,
+    SttProvider,
+    LlmProvider,
+}
+
+impl ConfigSetting {
+    /// Returns the string representation for config response payloads.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PromptSections => "prompt-sections",
+            Self::SttTimeout => "stt-timeout",
+            Self::SttProvider => "stt-provider",
+            Self::LlmProvider => "llm-provider",
+        }
+    }
 }
 
 // =============================================================================
@@ -66,16 +101,16 @@ pub enum ConfigResponse<T: Serialize> {
 }
 
 impl<T: Serialize> ConfigResponse<T> {
-    pub fn updated(setting: &str, value: T) -> Self {
+    pub fn updated(setting: ConfigSetting, value: T) -> Self {
         Self::Updated {
-            setting: setting.to_string(),
+            setting: setting.as_str().to_string(),
             value,
         }
     }
 
-    pub fn error(setting: &str, error: impl ToString) -> ConfigResponse<()> {
+    pub fn error(setting: ConfigSetting, error: impl ToString) -> ConfigResponse<()> {
         ConfigResponse::Error {
-            setting: setting.to_string(),
+            setting: setting.as_str().to_string(),
             error: error.to_string(),
         }
     }

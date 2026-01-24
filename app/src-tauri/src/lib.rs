@@ -12,6 +12,8 @@ mod commands;
 mod config_sync;
 pub mod events;
 mod history;
+
+use events::EventName;
 mod mic_capture;
 mod settings;
 mod state;
@@ -22,7 +24,7 @@ mod tests;
 use audio_mute::AudioMuteManager;
 use history::HistoryStorage;
 use mic_capture::{AudioDeviceInfo, MicCapture, MicCaptureManager};
-use settings::HotkeyConfig;
+use settings::{HotkeyConfig, StoreKey};
 use state::AppState;
 
 #[cfg(desktop)]
@@ -30,6 +32,9 @@ use tauri_plugin_store::StoreExt;
 
 #[cfg(desktop)]
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutEvent, ShortcutState};
+
+#[cfg(desktop)]
+use commands::settings::get_setting_from_store;
 
 // Define NSPanel type for overlay on macOS
 #[cfg(target_os = "macos")]
@@ -69,32 +74,18 @@ pub(crate) fn normalize_shortcut_string(s: &str) -> String {
         .join("+")
 }
 
-/// Helper to read a setting from the store with a default fallback
-#[cfg(desktop)]
-fn get_setting_from_store<T: serde::de::DeserializeOwned>(
-    app: &AppHandle,
-    key: &str,
-    default: T,
-) -> T {
-    app.store("settings.json")
-        .ok()
-        .and_then(|store| store.get(key))
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or(default)
-}
-
 /// Save a setting to the store
 #[cfg(desktop)]
 pub(crate) fn save_setting_to_store<T: serde::Serialize>(
     app: &AppHandle,
-    key: &str,
+    key: StoreKey,
     value: &T,
 ) -> Result<(), String> {
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to get store: {}", e))?;
     let json_value = serde_json::to_value(value).map_err(|e| e.to_string())?;
-    store.set(key, json_value); // set() returns ()
+    store.set(key.as_str(), json_value); // set() returns ()
     store
         .save()
         .map_err(|e| format!("Failed to save store: {}", e))?;
@@ -126,7 +117,7 @@ fn start_recording(
             }
         }
     }
-    let _ = app.emit("recording-start", ());
+    let _ = app.emit(EventName::RecordingStart.as_str(), ());
 }
 
 /// Stop recording with sound and audio unmute handling
@@ -152,7 +143,7 @@ fn stop_recording(
     if sound_enabled {
         audio::play_sound(audio::SoundType::RecordingStop);
     }
-    let _ = app.emit("recording-stop", ());
+    let _ = app.emit(EventName::RecordingStop.as_str(), ());
 }
 
 /// Handle a shortcut event - public so it can be called from commands/settings.rs
@@ -161,19 +152,22 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event: &Short
     let state = app.state::<AppState>();
 
     // Get current settings from store
-    let sound_enabled: bool = get_setting_from_store(app, "sound_enabled", true);
-    let auto_mute_audio: bool = get_setting_from_store(app, "auto_mute_audio", false);
+    let sound_enabled: bool = get_setting_from_store(app, StoreKey::SoundEnabled, true);
+    let auto_mute_audio: bool = get_setting_from_store(app, StoreKey::AutoMuteAudio, false);
 
     // Get shortcut string for comparison (normalized to handle "ctrl" vs "control" differences)
     let shortcut_str = normalize_shortcut_string(&shortcut.to_string());
 
     // Get configured shortcut strings from store (normalized), with validation fallback
     let toggle_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "toggle_hotkey", HotkeyConfig::default_toggle());
+        get_setting_from_store(app, StoreKey::ToggleHotkey, HotkeyConfig::default_toggle());
     let hold_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "hold_hotkey", HotkeyConfig::default_hold());
-    let paste_last_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "paste_last_hotkey", HotkeyConfig::default_paste_last());
+        get_setting_from_store(app, StoreKey::HoldHotkey, HotkeyConfig::default_hold());
+    let paste_last_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        StoreKey::PasteLastHotkey,
+        HotkeyConfig::default_paste_last(),
+    );
 
     // Validate hotkeys - if they can't be parsed as shortcuts, use defaults
     let toggle_shortcut_str = normalize_shortcut_string(
@@ -211,7 +205,7 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event: &Short
                 // Emit prepare event to start mic acquisition early (before key release)
                 // This allows the frontend to pre-warm the microphone while user holds the key
                 if !state.is_recording.load(Ordering::SeqCst) {
-                    let _ = app.emit("prepare-recording", ());
+                    let _ = app.emit(EventName::PrepareRecording.as_str(), ());
                 }
             }
             ShortcutState::Released => {
@@ -412,7 +406,7 @@ pub fn run() {
             // Audio data is streamed to frontend via "native-audio-data" events
             let app_handle = app.handle().clone();
             let mic_capture_manager = MicCaptureManager::new(move |audio_data| {
-                let _ = app_handle.emit("native-audio-data", audio_data);
+                let _ = app_handle.emit(EventName::NativeAudioData.as_str(), audio_data);
             });
             app.manage(mic_capture_manager);
 
@@ -532,7 +526,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => {
                 // Emit disconnect request to frontend before exiting
                 if let Some(window) = app.get_webview_window("overlay") {
-                    let _ = window.emit("request-disconnect", ());
+                    let _ = window.emit(EventName::RequestDisconnect.as_str(), ());
                 }
                 // Give frontend time to disconnect gracefully
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -577,11 +571,14 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
 
     // Read hotkeys from store with defaults
     let mut toggle_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "toggle_hotkey", HotkeyConfig::default_toggle());
+        get_setting_from_store(app, StoreKey::ToggleHotkey, HotkeyConfig::default_toggle());
     let mut hold_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "hold_hotkey", HotkeyConfig::default_hold());
-    let mut paste_last_hotkey: HotkeyConfig =
-        get_setting_from_store(app, "paste_last_hotkey", HotkeyConfig::default_paste_last());
+        get_setting_from_store(app, StoreKey::HoldHotkey, HotkeyConfig::default_hold());
+    let mut paste_last_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        StoreKey::PasteLastHotkey,
+        HotkeyConfig::default_paste_last(),
+    );
 
     log::info!(
         "Registering shortcuts - Toggle: {} (enabled: {}), Hold: {} (enabled: {}), PasteLast: {} (enabled: {})",
@@ -606,7 +603,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     // Helper to try registering a single shortcut
     let try_register = |hotkey: &mut HotkeyConfig,
                         name: &str,
-                        store_key: &str,
+                        store_key: StoreKey,
                         default_fn: fn() -> HotkeyConfig,
                         registered: &mut bool,
                         error: &mut Option<String>| {
@@ -639,7 +636,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut toggle_hotkey,
         "Toggle",
-        "toggle_hotkey",
+        StoreKey::ToggleHotkey,
         HotkeyConfig::default_toggle,
         &mut result.toggle_registered,
         &mut result.errors.toggle_error,
@@ -647,7 +644,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut hold_hotkey,
         "Hold",
-        "hold_hotkey",
+        StoreKey::HoldHotkey,
         HotkeyConfig::default_hold,
         &mut result.hold_registered,
         &mut result.errors.hold_error,
@@ -655,7 +652,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut paste_last_hotkey,
         "PasteLast",
-        "paste_last_hotkey",
+        StoreKey::PasteLastHotkey,
         HotkeyConfig::default_paste_last,
         &mut result.paste_last_registered,
         &mut result.errors.paste_last_error,

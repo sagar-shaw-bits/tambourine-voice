@@ -6,6 +6,8 @@ use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::settings::{StoreKey, DEFAULT_SERVER_URL};
+
 /// Delay after clipboard operations to ensure system stability
 const CLIPBOARD_STABILIZATION_DELAY_MS: u64 = 50;
 
@@ -15,14 +17,11 @@ const KEY_EVENT_DELAY_MS: u64 = 50;
 /// Delay before restoring previous clipboard content
 const CLIPBOARD_RESTORE_DELAY_MS: u64 = 100;
 
-/// Default server URL when not configured
-const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8765";
-
 #[tauri::command]
 pub async fn get_server_url(app: AppHandle) -> Result<String, String> {
     let store = app.store("settings.json").map_err(|e| e.to_string())?;
     let url = store
-        .get("server_url")
+        .get(StoreKey::ServerUrl.as_str())
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
     Ok(url)
