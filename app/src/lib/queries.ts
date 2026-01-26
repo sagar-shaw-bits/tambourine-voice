@@ -1,7 +1,9 @@
 import { notifications } from "@mantine/notifications";
+import type { QueryClient } from "@tanstack/react-query";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
+import { match } from "ts-pattern";
 
 // =============================================================================
 // Notification Helpers
@@ -26,14 +28,20 @@ function showSettingsError(message: string): void {
 }
 
 import {
+	type AppSettings,
 	type AvailableProvidersData,
 	type CleanupPromptSections,
 	type ConnectionState,
 	configAPI,
+	type DetectedFileType,
 	getProviderIdFromSelection,
+	type HistoryImportStrategy,
 	type HotkeyConfig,
+	type LLMProviderSelection,
+	type PromptSectionName,
 	parseLLMProviderSelection,
 	parseSTTProviderSelection,
+	type STTProviderSelection,
 	tauriAPI,
 	validateHotkeyNotDuplicate,
 } from "./tauri";
@@ -318,7 +326,8 @@ export function useHistory(limit?: number) {
 export function useAddHistoryEntry() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: (text: string) => tauriAPI.addHistoryEntry(text),
+		mutationFn: ({ text, rawText }: { text: string; rawText: string }) =>
+			tauriAPI.addHistoryEntry(text, rawText),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
 			// Notify other windows about history change
@@ -472,6 +481,42 @@ async function executeProviderChange<TSelection>(
 	return promise;
 }
 
+function handleProviderMutationSuccess<
+	TSelection extends STTProviderSelection | LLMProviderSelection,
+>(
+	queryClient: QueryClient,
+	providerType: "llm" | "stt",
+	selection: TSelection | null,
+): void {
+	if (!selection) return;
+	const providerId = getProviderIdFromSelection(selection);
+
+	const { updateTauriSetting, settingsKey } = match(providerType)
+		.with("llm", () => ({
+			updateTauriSetting: tauriAPI.updateLLMProvider,
+			settingsKey: "llm_provider" as const,
+		}))
+		.with("stt", () => ({
+			updateTauriSetting: tauriAPI.updateSTTProvider,
+			settingsKey: "stt_provider" as const,
+		}))
+		.exhaustive();
+
+	updateTauriSetting(providerId);
+
+	// Immediately update the settings cache to prevent flicker
+	queryClient.setQueryData(
+		["settings"],
+		(oldSettings: AppSettings | undefined) => {
+			if (!oldSettings) return oldSettings;
+			return { ...oldSettings, [settingsKey]: providerId };
+		},
+	);
+
+	// Invalidate to ensure eventual consistency with server
+	queryClient.invalidateQueries({ queryKey: ["settings"] });
+}
+
 export function useUpdateLLMProviderWithServer() {
 	const queryClient = useQueryClient();
 	return useMutation({
@@ -483,12 +528,8 @@ export function useUpdateLLMProviderWithServer() {
 				value,
 				signal,
 			),
-		onSuccess: (selection) => {
-			if (!selection) return;
-			const providerId = getProviderIdFromSelection(selection);
-			tauriAPI.updateLLMProvider(providerId);
-			queryClient.invalidateQueries({ queryKey: ["settings"] });
-		},
+		onSuccess: (selection) =>
+			handleProviderMutationSuccess(queryClient, "llm", selection),
 	});
 }
 
@@ -503,11 +544,335 @@ export function useUpdateSTTProviderWithServer() {
 				value,
 				signal,
 			),
-		onSuccess: (selection) => {
-			if (!selection) return;
-			const providerId = getProviderIdFromSelection(selection);
-			tauriAPI.updateSTTProvider(providerId);
+		onSuccess: (selection) =>
+			handleProviderMutationSuccess(queryClient, "stt", selection),
+	});
+}
+
+// =============================================================================
+// Export/Import Hooks
+// =============================================================================
+
+/** Parsed file with its detected type and content */
+export interface ParsedExportFile {
+	type: DetectedFileType | "prompt";
+	content: string;
+	filename: string;
+	/** For prompt files, the section name */
+	promptSection?: PromptSectionName;
+	/** For prompt files, the actual prompt content (without header) */
+	promptContent?: string;
+}
+
+/**
+ * Hook to export data (settings, history, and prompts) to a selected folder.
+ * Opens a folder picker dialog and writes files.
+ * - tambourine-settings.json
+ * - tambourine-history.json
+ * - tambourine-prompt-{section}.md (for each custom prompt)
+ */
+export function useExportData() {
+	return useMutation({
+		mutationFn: async () => {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+
+			// Open folder picker
+			const selectedPath = await open({
+				directory: true,
+				multiple: false,
+				title: "Select Export Folder",
+			});
+
+			if (!selectedPath) {
+				// User cancelled
+				return null;
+			}
+
+			// Generate exports
+			const [settingsJson, historyJson, promptExports] = await Promise.all([
+				tauriAPI.generateSettingsExport(),
+				tauriAPI.generateHistoryExport(),
+				tauriAPI.generatePromptExports(),
+			]);
+
+			// Write JSON files
+			const settingsPath = `${selectedPath}/tambourine-settings.json`;
+			const historyPath = `${selectedPath}/tambourine-history.json`;
+
+			const writePromises: Promise<void>[] = [
+				writeTextFile(settingsPath, settingsJson),
+				writeTextFile(historyPath, historyJson),
+			];
+
+			// Write prompt .md files (only for custom prompts)
+			const promptFiles: string[] = [];
+			for (const [section, content] of Object.entries(promptExports)) {
+				const promptPath = `${selectedPath}/tambourine-prompt-${section}.md`;
+				writePromises.push(writeTextFile(promptPath, content));
+				promptFiles.push(promptPath);
+			}
+
+			await Promise.all(writePromises);
+
+			return { settingsPath, historyPath, promptFiles };
+		},
+		onSuccess: (result) => {
+			if (result) {
+				const promptCount = result.promptFiles.length;
+				const promptMsg =
+					promptCount > 0 ? ` and ${promptCount} prompt(s)` : "";
+				notifications.show({
+					title: "Export Complete",
+					message: `Settings, history${promptMsg} exported successfully`,
+					color: "green",
+					autoClose: 3000,
+				});
+			}
+		},
+		onError: (error) => {
+			notifications.show({
+				title: "Export Failed",
+				message: error instanceof Error ? error.message : "Unknown error",
+				color: "red",
+				autoClose: 5000,
+			});
+		},
+	});
+}
+
+/**
+ * Hook to import data from selected files.
+ * Opens a file picker (multi-select), auto-detects file types.
+ * - .json files: detected via `type` field (settings or history)
+ * - .md files: detected via HTML comment header (prompts)
+ * Returns parsed files for the caller to handle (e.g., show strategy modal for history).
+ */
+export function useImportData() {
+	return useMutation({
+		mutationFn: async (): Promise<ParsedExportFile[]> => {
+			const { open } = await import("@tauri-apps/plugin-dialog");
+			const { readTextFile } = await import("@tauri-apps/plugin-fs");
+
+			// Open file picker (allow multiple selection)
+			const selectedPaths = await open({
+				multiple: true,
+				filters: [
+					{
+						name: "Export Files",
+						extensions: ["json", "md"],
+					},
+				],
+				title: "Select Export Files to Import",
+			});
+
+			if (!selectedPaths || selectedPaths.length === 0) {
+				return [];
+			}
+
+			// Read and detect file types
+			const files: ParsedExportFile[] = [];
+
+			for (const path of selectedPaths) {
+				const content = await readTextFile(path);
+				const filename = path.split("/").pop() ?? path;
+
+				// Check if it's a markdown file (potential prompt)
+				if (filename.endsWith(".md")) {
+					try {
+						const [section, promptContent] =
+							await tauriAPI.parsePromptFile(content);
+						files.push({
+							type: "prompt",
+							content,
+							filename,
+							promptSection: section,
+							promptContent,
+						});
+					} catch {
+						// Not a valid prompt file, mark as unknown
+						files.push({ type: "unknown", content, filename });
+					}
+				} else {
+					// JSON file - detect type from content
+					const type = await tauriAPI.detectExportFileType(content);
+					files.push({ type, content, filename });
+				}
+			}
+
+			return files;
+		},
+	});
+}
+
+/**
+ * Hook to import settings from a parsed file content.
+ * Uses pessimistic sync for providers via overlay.
+ */
+export function useImportSettings() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (content: string) => {
+			await tauriAPI.importSettings(content);
+			await tauriAPI.registerShortcuts();
+
+			const settings = await tauriAPI.getSettings();
+
+			await executeProviderChange(
+				"stt",
+				"stt-provider",
+				parseSTTProviderSelection,
+				settings.stt_provider,
+			);
+
+			await executeProviderChange(
+				"llm",
+				"llm-provider",
+				parseLLMProviderSelection,
+				settings.llm_provider,
+			);
+		},
+		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
+			tauriAPI.emitSettingsChanged();
+			notifications.show({
+				title: "Settings Imported",
+				message: "Settings have been imported and applied",
+				color: "green",
+				autoClose: 3000,
+			});
+		},
+		onError: (error) => {
+			notifications.show({
+				title: "Import Failed",
+				message: error instanceof Error ? error.message : "Unknown error",
+				color: "red",
+				autoClose: 5000,
+			});
+		},
+	});
+}
+
+/**
+ * Hook to import history from a parsed file content with a strategy.
+ */
+export function useImportHistory() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async ({
+			content,
+			strategy,
+		}: {
+			content: string;
+			strategy: HistoryImportStrategy;
+		}) => {
+			return tauriAPI.importHistory(content, strategy);
+		},
+		onSuccess: (result) => {
+			queryClient.invalidateQueries({ queryKey: ["history"] });
+			tauriAPI.emitHistoryChanged();
+			const imported = result.entries_imported ?? 0;
+			notifications.show({
+				title: "History Imported",
+				message: `${imported} entries imported`,
+				color: "green",
+				autoClose: 3000,
+			});
+		},
+		onError: (error) => {
+			notifications.show({
+				title: "Import Failed",
+				message: error instanceof Error ? error.message : "Unknown error",
+				color: "red",
+				autoClose: 5000,
+			});
+		},
+	});
+}
+
+/**
+ * Hook to import a prompt from a parsed file content.
+ */
+export function useImportPrompt() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async ({
+			section,
+			content,
+		}: {
+			section: PromptSectionName;
+			content: string;
+		}) => {
+			return tauriAPI.importPrompt(section, content);
+		},
+		onSuccess: (_result, { section }) => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			notifications.show({
+				title: "Prompt Imported",
+				message: `${section} prompt imported successfully`,
+				color: "green",
+				autoClose: 3000,
+			});
+		},
+		onError: (error) => {
+			notifications.show({
+				title: "Import Failed",
+				message: error instanceof Error ? error.message : "Unknown error",
+				color: "red",
+				autoClose: 5000,
+			});
+		},
+	});
+}
+
+/**
+ * Hook to perform a factory reset.
+ * Uses pessimistic sync for default providers via overlay.
+ */
+export function useFactoryReset() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async () => {
+			await tauriAPI.factoryReset();
+			await tauriAPI.registerShortcuts();
+
+			const defaultProvider = "auto";
+
+			await executeProviderChange(
+				"stt",
+				"stt-provider",
+				parseSTTProviderSelection,
+				defaultProvider,
+			);
+
+			await executeProviderChange(
+				"llm",
+				"llm-provider",
+				parseLLMProviderSelection,
+				defaultProvider,
+			);
+		},
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.invalidateQueries({ queryKey: ["history"] });
+			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
+			tauriAPI.emitSettingsChanged();
+			tauriAPI.emitHistoryChanged();
+			notifications.show({
+				title: "Factory Reset Complete",
+				message: "All settings and history have been reset to defaults",
+				color: "green",
+				autoClose: 3000,
+			});
+		},
+		onError: (error) => {
+			notifications.show({
+				title: "Factory Reset Failed",
+				message: error instanceof Error ? error.message : "Unknown error",
+				color: "red",
+				autoClose: 5000,
+			});
 		},
 	});
 }

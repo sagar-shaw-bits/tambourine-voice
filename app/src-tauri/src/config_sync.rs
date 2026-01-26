@@ -6,6 +6,9 @@ use tokio::sync::RwLock;
 
 use crate::settings::CleanupPromptSections;
 
+/// Default STT timeout in seconds (matches server's DEFAULT_TRANSCRIPTION_WAIT_TIMEOUT_SECONDS)
+pub const DEFAULT_STT_TIMEOUT_SECONDS: f64 = 0.5;
+
 /// Tracks server connection state for config syncing
 pub struct ConfigSyncState {
     client: Client,
@@ -47,6 +50,11 @@ impl ConfigSyncState {
         self.server_url = None;
         self.client_uuid = None;
         log::info!("Config sync disconnected");
+    }
+
+    /// Check if connected to a server
+    pub fn is_connected(&self) -> bool {
+        self.server_url.is_some() && self.client_uuid.is_some()
     }
 
     /// Sync prompt sections to server (best-effort, logs errors)
