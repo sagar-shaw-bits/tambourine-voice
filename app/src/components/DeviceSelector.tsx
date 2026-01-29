@@ -7,6 +7,9 @@ import {
 import { useSettings, useUpdateSelectedMic } from "../lib/queries";
 import { StatusIndicator } from "./settings/StatusIndicator";
 
+/** Interval for polling audio devices since native API lacks change events */  
+const DEVICE_REFRESH_INTERVAL_MS = 5000; 
+
 export function DeviceSelector() {
 	const { data: settings, isLoading: settingsLoading } = useSettings();
 	const updateSelectedMic = useUpdateSelectedMic();
@@ -32,7 +35,7 @@ export function DeviceSelector() {
 		loadDevices();
 
 		// Periodically refresh device list (native API doesn't have change events)
-		const intervalId = setInterval(loadDevices, 5000);
+		const intervalId = setInterval(loadDevices, DEVICE_REFRESH_INTERVAL_MS);
 
 		return () => {
 			clearInterval(intervalId);
