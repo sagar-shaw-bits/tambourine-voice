@@ -432,6 +432,108 @@
             }
         }
 
+        /* Hero stats */
+        .hero-stats {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 24px;
+            animation: fadeInUp 0.6s ease 0.35s forwards;
+            opacity: 0;
+        }
+
+        .hero-stat {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-default);
+            border-radius: 100px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+
+        .hero-stat:hover {
+            border-color: var(--text-muted);
+            color: var(--text-primary);
+            transform: translateY(-2px);
+        }
+
+        .hero-stat .lucide {
+            width: 16px;
+            height: 16px;
+            color: #fbbf24;
+        }
+
+        .hero-stat .stat-label {
+            color: var(--text-muted);
+        }
+
+        /* Testimonials section */
+        .testimonials {
+            background: var(--bg-elevated);
+            border-top: 1px solid var(--border-subtle);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .testimonials-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        @media (max-width: 900px) {
+            .testimonials-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .testimonial-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            padding: 24px;
+            transition: all 0.25s ease;
+            display: flex;
+            flex-direction: column;
+            text-decoration: none;
+        }
+
+        .testimonial-card:hover {
+            border-color: var(--border-default);
+            transform: translateY(-4px);
+        }
+
+        .testimonial-quote {
+            font-size: 15px;
+            line-height: 1.7;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            flex-grow: 1;
+        }
+
+        .testimonial-author {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .testimonial-author .name {
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-primary);
+        }
+
+        .testimonial-author .title {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+
         /* Section styling */
         section {
             padding: 120px 0;
@@ -954,7 +1056,6 @@
                 style="opacity:0.5" />
         </svg>
         <div class="container hero-content">
-            <div class="hero-badge">Open Source Voice Dictation Platform</div>
             <h1><span>Your Personal Voice Interface for Any App</span></h1>
             <p class="hero-subtitle">An open-source platform for AI voice dictation that you can customize and
                 personalize to your exact needs. Choose your models, write your prompts, make it yours.</p>
@@ -968,6 +1069,23 @@
                     Star on GitHub
                 </a>
             </div>
+            <div class="hero-stats">
+                <a href="https://github.com/kstonekuan/tambourine-voice/stargazers" class="hero-stat" target="_blank"
+                    rel="noopener">
+                    <i data-lucide="star"></i>
+                    <span id="star-count">—</span>
+                    <span class="stat-label">stars</span>
+                </a>
+            </div>
+            <script>
+                fetch('https://api.github.com/repos/kstonekuan/tambourine-voice')
+                    .then(r => r.json())
+                    .then(d => {
+                        const count = d.stargazers_count;
+                        document.getElementById('star-count').textContent = count >= 1000 ? (count / 1000).toFixed(1) + 'k' : count;
+                    })
+                    .catch(() => { });
+            </script>
             <div class="hero-compat">
                 <span><svg viewBox="0 0 24 24" fill="currentColor">
                         <path
@@ -987,14 +1105,53 @@
         </div>
     </section>
 
+    <!-- Testimonials Section -->
+    <section class="testimonials">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">What People Say</h2>
+            </div>
+            <div class="testimonials-grid">
+                <a href="https://www.linkedin.com/posts/kwkramer_did-you-know-that-pipecat-is-so-flexible-ugcPost-7409755889731137536-qBKr"
+                    class="testimonial-card" target="_blank" rel="noopener">
+                    <p class="testimonial-quote">"I love this kind of project: open source, hackable, filling a gap in
+                        the voice ecosystem with a really useful codebase, pushing the boundaries of what you can do
+                        with 'voice AI engineering.'"</p>
+                    <div class="testimonial-author">
+                        <span class="name">Kwindla Hultman Kramer</span>
+                        <span class="title">Co-founder / CEO, Daily (Pipecat)</span>
+                    </div>
+                </a>
+                <a href="https://www.linkedin.com/posts/stuart843_did-you-know-that-pipecat-is-so-flexible-ugcPost-7412078365287002119-6s1t"
+                    class="testimonial-card" target="_blank" rel="noopener">
+                    <p class="testimonial-quote">"When I saw this I knew we had to give it a try and it works
+                        brilliantly."</p>
+                    <div class="testimonial-author">
+                        <span class="name">Stuart Wood</span>
+                        <span class="title">Speechmatics</span>
+                    </div>
+                </a>
+                <a href="https://www.linkedin.com/posts/derek-haynes-ba24b71_most-of-us-speak-around-130-160-words-per-minute-activity-7419412222822637568-6ew2"
+                    class="testimonial-card" target="_blank" rel="noopener">
+                    <p class="testimonial-quote">"Most of us speak around 130-160 wpm and type 40-50 wpm. That means
+                        speaking is about 3x faster than typing. I've been using Tambourine to dictate directly to
+                        Claude Code. I'm impressed."</p>
+                    <div class="testimonial-author">
+                        <span class="name">Derek Haynes</span>
+                        <span class="title">Finchvox</span>
+                    </div>
+                </a>
+            </div>
+        </div>
+    </section>
+
     <!-- Platform Section -->
     <section class="platform">
         <div class="container">
             <div class="section-header">
-                <div class="section-label">The Platform Approach</div>
                 <h2 class="section-title">The Foundation of Voice Interfaces</h2>
-                <p class="section-subtitle">Tambourine isn't a locked-down app. It's infrastructure you can build on to
-                    create exactly the voice experience you need.</p>
+                <p class="section-subtitle">You can build on top of Tambourine to create exactly the voice
+                    experience you need.</p>
             </div>
             <div class="platform-grid">
                 <div class="platform-card">
@@ -1029,8 +1186,7 @@
     <section class="features">
         <div class="container">
             <div class="section-header">
-                <div class="section-label">What You Can Build</div>
-                <h2 class="section-title">Examples of Personalization</h2>
+                <h2 class="section-title">Personalize Everything</h2>
                 <p class="section-subtitle">These features ship by default, but they're implemented in customizable
                     prompts. Modify them, extend them, or build your own.</p>
             </div>
@@ -1100,10 +1256,8 @@
     <section class="future">
         <div class="container">
             <div class="section-header">
-                <div class="section-label">Coming Soon</div>
-                <h2 class="section-title">Context-Awareness</h2>
-                <p class="section-subtitle">Tmabourine will access surrounding context to make dictation
-                    smarter.</p>
+                <h2 class="section-title">Coming Soon: Context-Awareness</h2>
+                <p class="section-subtitle">Tambourine will access surrounding context to make dictation smarter.</p>
             </div>
             <div class="future-grid">
                 <div class="future-card">
@@ -1128,8 +1282,7 @@
     <section class="get-started" id="get-started">
         <div class="container">
             <div class="section-header">
-                <div class="section-label">Get Started</div>
-                <h2 class="section-title">Choose How to Run Tambourine</h2>
+                <h2 class="section-title">Get Started</h2>
                 <p class="section-subtitle">Run it yourself for free, or let us handle the infrastructure.</p>
             </div>
             <div class="get-started-grid">
@@ -1173,17 +1326,24 @@
                     AGPL-3.0 License
                 </div>
                 <h2>Built in the Open</h2>
-                <p>Tambourine is fully open source. Contribute features, report bugs, or fork it and build something
-                    new. The platform is yours.</p>
+                <p>Tambourine is fully open source. Contribute features, report bugs, or join the community. The
+                    platform is yours.</p>
                 <div class="community-ctas">
-                    <a href="https://github.com/kstonekuan/tambourine-voice" class="btn btn-primary" target="_blank"
-                        rel="noopener">
-                        <i data-lucide="github"></i>
-                        View on GitHub
+                    <a href="https://github.com/kstonekuan/tambourine-voice/stargazers" class="btn btn-primary"
+                        target="_blank" rel="noopener">
+                        <i data-lucide="star"></i>
+                        Star the Repo
+                    </a>
+                    <a href="https://discord.gg/dUyuXWVJ2a" class="btn btn-secondary" target="_blank" rel="noopener">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                            <path
+                                d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+                        </svg>
+                        Join Discord
                     </a>
                     <a href="https://github.com/kstonekuan/tambourine-voice/blob/main/CONTRIBUTING.md"
                         class="btn btn-secondary" target="_blank" rel="noopener">
-                        <i data-lucide="users"></i>
+                        <i data-lucide="git-pull-request"></i>
                         Contribute
                     </a>
                 </div>
@@ -1209,6 +1369,7 @@
                 </a>
                 <div class="footer-links">
                     <a href="https://github.com/kstonekuan/tambourine-voice" target="_blank" rel="noopener">GitHub</a>
+                    <a href="https://discord.gg/dUyuXWVJ2a" target="_blank" rel="noopener">Discord</a>
                     <a href="https://github.com/kstonekuan/tambourine-voice/blob/main/README.md" target="_blank"
                         rel="noopener">Docs</a>
                 </div>

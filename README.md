@@ -5,6 +5,7 @@
 # Tambourine
 
 <p align="center">
+  <a href="https://github.com/kstonekuan/tambourine-voice/stargazers"><img src="https://img.shields.io/github/stars/kstonekuan/tambourine-voice?style=flat&logo=github" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <a href="https://discord.gg/dUyuXWVJ2a"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://deepwiki.com/kstonekuan/tambourine-voice"><img src="https://deepwiki.com/badge.svg" alt="DeepWiki"></a>
@@ -14,8 +15,6 @@ Your personal voice interface for any app. Speak naturally and your words appear
 
 Open-source alternative to [Wispr Flow](https://wisprflow.ai), [Superwhisper](https://superwhisper.com), and [Willow](https://willowvoice.com).
 
-> ⚠️ **Build in Progress**
-> This project is under active development. Core features work well, but expect breaking changes to the code, architecture, and configuration as the project evolves.
 
 > 🚀 **Hosted Service Coming Soon!**
 > [Join the waitlist](https://docs.google.com/forms/d/e/1FAIpQLSf6JfLheFlBU-jAVMzgA7CKCcFb39fGZOaizKjxSBMCwSrVZg/viewform) to use Tambourine without running the server yourself.
@@ -138,6 +137,9 @@ On macOS, Tambourine needs accessibility permissions to type text at your cursor
   - If running from Terminal: Add "Terminal" (or your terminal app like iTerm2)
 
 ## Quick Start
+
+> ⚠️ **Build in Progress**
+> This project is under active development. Core features work well, but expect breaking changes to the code, architecture, and configuration as the project evolves.
 
 ### 1. Get API Keys
 
@@ -326,6 +328,15 @@ Built with [Tauri](https://tauri.app/) for the cross-platform desktop app and [P
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## Support
+
+If you find Tambourine useful, here are ways to support the project:
+
+- **Star the repo** — It helps others discover the project and motivates development
+- **Report issues** — Found a bug or have a feature request? [Open an issue](https://github.com/kstonekuan/tambourine-voice/issues)
+- **Join Discord** — Connect with the community for help and discussions in our [Discord server](https://discord.gg/dUyuXWVJ2a)
+- **Contribute** — Check out [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute
 
 ## License
 
