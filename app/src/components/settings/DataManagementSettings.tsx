@@ -10,6 +10,7 @@ import {
 	Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { AlertTriangle, Download, RotateCcw, Upload } from "lucide-react";
 import { useState } from "react";
 import { match } from "ts-pattern";
@@ -213,10 +214,7 @@ export function DataManagementSettings() {
 							variant="subtle"
 							color="gray"
 							onClick={() =>
-								window.open(
-									"https://github.com/kstonekuan/tambourine-voice",
-									"_blank",
-								)
+								openUrl("https://github.com/kstonekuan/tambourine-voice")
 							}
 						>
 							<svg
@@ -237,9 +235,7 @@ export function DataManagementSettings() {
 							size="xs"
 							variant="subtle"
 							color="gray"
-							onClick={() =>
-								window.open("https://discord.gg/dUyuXWVJ2a", "_blank")
-							}
+							onClick={() => openUrl("https://discord.gg/dUyuXWVJ2a")}
 						>
 							<svg
 								viewBox="0 0 24 24"
